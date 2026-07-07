@@ -63,3 +63,32 @@ fm_supervision_unhealthy() {
   fm_supervision_status "$@"
   [ "$FM_SUP_IN_FLIGHT" -gt 0 ] && [ "$FM_SUP_WATCHER_FRESH" = false ]
 }
+
+_FM_SUP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_SUP_LIB_DIR="."
+# The teardown-eligibility predicate lives in fm-classify-lib.sh (one owner). Source
+# it when present so the parked-crew banner can list eligible crews; when it is
+# absent (a minimal fixture exercising only the beacon/liveness half of this lib),
+# degrade silently - fm_parked_teardown_eligible_ids then lists nothing.
+if [ -r "$_FM_SUP_LIB_DIR/fm-classify-lib.sh" ]; then
+  # shellcheck source=bin/fm-classify-lib.sh
+  . "$_FM_SUP_LIB_DIR/fm-classify-lib.sh"
+fi
+
+# fm_parked_teardown_eligible_ids <state-dir>
+# Print, one per line, the ids of in-flight tasks that are teardown-eligible
+# (finished, deliverable secured, outcome already surfaced - the exact predicate
+# the watcher uses to absorb a finished-crew stale). Both guards (fm-turnend-guard,
+# fm-guard) call this to lead a blind-turn banner with the parked crews and the one
+# teardown command, so the fix is a copy-paste, not a diagnosis. The predicate is
+# defined once in fm-classify-lib.sh; this only lists. Always returns 0, and lists
+# nothing when the predicate is unavailable (classify-lib not sourced).
+fm_parked_teardown_eligible_ids() {  # <state-dir>
+  local state=$1 meta id
+  command -v crew_is_teardown_eligible >/dev/null 2>&1 || return 0
+  for meta in "$state"/*.meta; do
+    [ -e "$meta" ] || continue
+    id=$(basename "$meta"); id=${id%.meta}
+    crew_is_teardown_eligible "$id" "$state" && printf '%s\n' "$id"
+  done
+  return 0
+}

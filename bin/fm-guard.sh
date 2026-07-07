@@ -79,11 +79,23 @@ if [ "$watcher_fresh" = false ]; then
   else
     fix='Re-arm it NOW: run bin/fm-watch-arm.sh as the harness-tracked background task (never a shell & that gets reaped).'
   fi
+  # When the cause is finished crews parked without teardown, re-arming alone just
+  # re-enters the churn loop. Lead with the parked-crew list and the one teardown
+  # command so the fix surfaces on any fleet-touching command, not only at turn end.
+  parked=$(fm_parked_teardown_eligible_ids "$STATE")
   rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '●%s\n' "$rule"
     printf '●  WATCHER DOWN - SUPERVISION IS OFF\n'
     printf '●  %s task(s) in flight, but no watcher has a fresh beacon (last beat: %s, grace %ss).\n' "$in_flight" "$beacon_desc" "$GRACE"
+    if [ -n "$parked" ] && [ "$READ_ONLY" -ne 1 ]; then
+      printf '●  %s finished crew(s) are parked and are the likely churn source:\n' "$(printf '%s\n' "$parked" | grep -c .)"
+      printf '%s\n' "$parked" | while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        printf '●      %s   tear down: bin/fm-teardown.sh %s\n' "$pid" "$pid"
+      done
+      printf '●  Tearing these down stops the repeated blind turns; then re-arm.\n'
+    fi
     if [ "$READ_ONLY" -eq 1 ]; then
       printf '●  This read-only session should report the lapse, not repair it.\n'
     else

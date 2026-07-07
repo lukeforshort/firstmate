@@ -193,6 +193,162 @@ test_signal_crew_provably_working_classifier() {
   pass "signal_crew_provably_working: benign only when every referenced crew is provably working"
 }
 
+# crew_is_teardown_eligible (F4 Test A): 0 (eligible) iff a crew is finished, its
+# deliverable is secured, AND its outcome was already surfaced. Conservative: it
+# delegates the ship "secured" check to fm-teardown.sh --dry-run and the scout
+# check to the report file, and requires the .hb-surfaced marker to match the
+# current captain-relevant status. Any leg missing -> NOT eligible -> the finished
+# pane still surfaces. This is the pure-predicate half of the churn guarantee.
+test_crew_is_teardown_eligible_classifier() {
+  local dir state data marker
+  dir=$(make_case teardown-eligible); state="$dir/state"; data="$dir/data"
+  export FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE
+  # A finished (not-working) scout with its report written and outcome surfaced.
+  FM_FAKE_CREW_STATE='state: unknown · source: none · finished'
+  printf 'kind=scout\n' > "$state/sc.meta"
+  printf 'done: report ready\n' > "$state/sc.status"
+  mkdir -p "$data/sc"; printf 'findings\n' > "$data/sc/report.md"
+  marker="$state/.hb-surfaced-sc"
+  printf 'done: report ready' > "$marker"
+  crew_is_teardown_eligible sc "$state" || fail "secured+surfaced scout not eligible"
+  # Report absent -> not secured -> NOT eligible.
+  rm -f "$data/sc/report.md"
+  ! crew_is_teardown_eligible sc "$state" || fail "scout with no report treated as eligible"
+  printf 'findings\n' > "$data/sc/report.md"
+  # Surfaced marker absent -> outcome never relayed -> NOT eligible.
+  rm -f "$marker"
+  ! crew_is_teardown_eligible sc "$state" || fail "never-surfaced scout treated as eligible"
+  # Surfaced marker present but stale (does not match current status) -> NOT eligible.
+  printf 'done: an OLDER outcome' > "$marker"
+  ! crew_is_teardown_eligible sc "$state" || fail "scout with a stale surfaced marker treated as eligible"
+  printf 'done: report ready' > "$marker"
+  # Provably working (still validating) -> NOT eligible, even fully secured+surfaced.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  ! crew_is_teardown_eligible sc "$state" || fail "a still-working scout treated as eligible"
+  FM_FAKE_CREW_STATE='state: unknown · source: none · finished'
+  # Ship path: eligibility delegates to fm-teardown.sh --dry-run (FM_TEARDOWN_BIN).
+  cat > "$dir/fakebin/fm-teardown.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${2:-}" = "--dry-run" ] || exit 3
+exit "${FM_FAKE_TEARDOWN_DRYRUN_RC:-0}"
+SH
+  chmod +x "$dir/fakebin/fm-teardown.sh"
+  export FM_TEARDOWN_BIN="$dir/fakebin/fm-teardown.sh"
+  printf 'kind=ship\n' > "$state/sh.meta"
+  printf 'done: PR https://example.test/pr/9\n' > "$state/sh.status"
+  printf 'done: PR https://example.test/pr/9' > "$state/.hb-surfaced-sh"
+  FM_FAKE_TEARDOWN_DRYRUN_RC=0 crew_is_teardown_eligible sh "$state" || fail "landed ship (dry-run 0) not eligible"
+  FM_FAKE_TEARDOWN_DRYRUN_RC=1 crew_is_teardown_eligible sh "$state" && fail "unlanded ship (dry-run 1) treated as eligible"
+  unset FM_FAKE_CREW_STATE FM_TEARDOWN_BIN
+  pass "crew_is_teardown_eligible: eligible only when finished + deliverable secured + outcome already surfaced"
+}
+
+# --- F4 Test B: the churn reproduction and its cure (behavioral) --------------
+# The audit's exact scenario: a finished scout with its report written, a done:
+# status, and an already-surfaced marker sits on an idle pane. Today (fail-safe
+# disabled) that stale pane surfaces every poll - the churn. With the fail-safe
+# enabled (default) the same pane is ABSORBED: no exit, no queue, no wedge timer.
+# Phase 3 proves the absorption cannot silence unsecured or unsurfaced work.
+test_teardown_eligible_stale_absorbed_not_surfaced() {
+  local dir state data fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case teardown-eligible-stale); state="$dir/state"; data="$dir/data"
+  fakebin="$dir/fakebin"; out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-done-scout"
+  printf 'report written, idle prompt' > "$capture_file"
+  printf 'window=%s\nkind=scout\n' "$window" > "$state/done-scout.meta"
+  printf 'done: report at data/done-scout/report.md\n' > "$state/done-scout.status"
+  mkdir -p "$data/done-scout"; printf 'the findings\n' > "$data/done-scout/report.md"
+  # The finish was already relayed: the surfaced marker matches the status line.
+  printf 'done: report at data/done-scout/report.md' > "$state/.hb-surfaced-done-scout"
+  sig=$(seen_sig "$state/done-scout.status"); printf '%s' "$sig" > "$state/.seen-done-scout_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "report written, idle prompt")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # Finished, not working.
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · finished'
+
+  # Phase 1: fail-safe DISABLED reproduces the churn - the pane surfaces and exits.
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_DISABLE_TEARDOWN_SUPPRESS=1 \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "Phase 1: watcher did not surface the finished-crew stale with the fail-safe disabled (fixture does not reproduce the churn)"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "Phase 1: expected the churn stale wake with the fail-safe disabled"
+  # Reset the per-hash suppressor AND drain Phase 1's enqueued churn wake so Phase 2
+  # re-classifies the same hash fresh and asserts against an empty queue.
+  rm -f "$state/.stale-$key" "$state/.stale-since-$key" "$state/.wake-queue"
+
+  # Phase 2: fail-safe ENABLED (default) - the same pane is absorbed, not surfaced.
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "Phase 2: watcher exited for a teardown-eligible finished-crew stale (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "Phase 2: teardown-eligible stale printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "Phase 2: teardown-eligible stale enqueued a durable wake"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "Phase 2: stale suppressor not advanced on absorb"
+  [ ! -e "$state/.stale-since-$key" ] || fail "Phase 2: a wedge timer was created for a teardown-eligible absorb (there is nothing to escalate)"
+  grep -F "teardown-eligible" "$state/.watch-triage.log" >/dev/null 2>&1 || fail "Phase 2: absorb was not recorded in the triage log"
+  reap "$pid"
+
+  # Phase 3a: report gone -> not secured -> surfaces even with the fail-safe on.
+  rm -f "$data/done-scout/report.md"
+  rm -f "$state/.stale-$key" "$state/.stale-since-$key"; : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "Phase 3a: a finished scout with no report was not surfaced (report gone = not secured)"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "Phase 3a: expected a surface when the report is gone"
+  mkdir -p "$data/done-scout"; printf 'the findings\n' > "$data/done-scout/report.md"
+
+  # Phase 3b: surfaced marker cleared -> outcome never relayed -> surfaces.
+  rm -f "$state/.hb-surfaced-done-scout"
+  rm -f "$state/.stale-$key" "$state/.stale-since-$key"; : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "Phase 3b: a finished scout whose outcome was never surfaced was not surfaced"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "Phase 3b: expected a surface when the finish was never relayed"
+
+  # Phase 3c: a ship whose fm-teardown.sh --dry-run refuses (unlanded) -> surfaces.
+  local sdir sstate sfakebin sout scap swindow skey shash ssig spid
+  sdir=$(make_case teardown-eligible-ship-unlanded); sstate="$sdir/state"; sfakebin="$sdir/fakebin"
+  sout="$sdir/watch.out"; scap="$sdir/pane.txt"
+  swindow="test:fm-ship-unlanded"
+  printf 'idle, awaiting merge' > "$scap"
+  printf 'window=%s\nkind=ship\n' "$swindow" > "$sstate/ship-unlanded.meta"
+  printf 'done: PR https://example.test/pr/2\n' > "$sstate/ship-unlanded.status"
+  printf 'done: PR https://example.test/pr/2' > "$sstate/.hb-surfaced-ship-unlanded"
+  ssig=$(seen_sig "$sstate/ship-unlanded.status"); printf '%s' "$ssig" > "$sstate/.seen-ship-unlanded_status"
+  skey=$(printf '%s' "$swindow" | tr ':/.' '___')
+  shash=$(hash_text "idle, awaiting merge")
+  printf '%s' "$shash" > "$sstate/.hash-$skey"
+  printf '1\n' > "$sstate/.count-$skey"
+  # A dry-run shim that always refuses (exit 1): an unlanded, awaiting-merge ship.
+  cat > "$sfakebin/fm-teardown.sh" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$sfakebin/fm-teardown.sh"
+  PATH="$sfakebin:$PATH" FM_FAKE_TMUX_WINDOW="$swindow" FM_FAKE_TMUX_CAPTURE="$scap" \
+    FM_STATE_OVERRIDE="$sstate" FM_CREW_STATE_BIN="$sfakebin/fm-crew-state.sh" FM_TEARDOWN_BIN="$sfakebin/fm-teardown.sh" \
+    FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$sout" &
+  spid=$!
+  wait_for_exit "$spid" 40 || fail "Phase 3c: an unlanded (awaiting-merge) ship was not surfaced"
+  grep -Fx "stale: $swindow" "$sout" >/dev/null || fail "Phase 3c: expected a surface for an unlanded ship (dry-run refuses)"
+
+  unset FM_FAKE_CREW_STATE
+  pass "teardown-eligible finished-crew stale is absorbed (no exit/queue/wedge), but unsecured or unsurfaced work still surfaces"
+}
+
 # --- benign wakes are absorbed ONLY when the crew is provably working ---------
 
 test_provably_working_signal_absorbed() {
@@ -746,6 +902,8 @@ test_scan_captain_relevant_statuses_classifier
 test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_signal_crew_provably_working_classifier
+test_crew_is_teardown_eligible_classifier
+test_teardown_eligible_stale_absorbed_not_surfaced
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
