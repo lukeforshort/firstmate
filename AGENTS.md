@@ -188,6 +188,7 @@ The digest's context section already contains `data/projects.md`, the fleet regi
 Treat any harness memory of captain preferences as a recall cache only; `data/captain.md` is the canonical, harness-portable home.
 If the digest reported `data/projects.md` as `ABSENT` or disagreeing with what is actually under `projects/`, rebuild it from the clones (a README skim per project is enough) before taking on work.
 An `ABSENT` `data/captain.md` or `data/secondmates.md` or `data/learnings.md` means exactly what section 2 says it means (template defaults, no registered secondmates, nothing captured yet) - not a problem to fix.
+At a natural low-activity point (an idle fleet at session start), if `data/learnings.md` has grown several overlapping entries on one topic, run a learnings-hygiene pass now: consolidate them into one canonical rule per the `/stow` skill, enforcing that file's own "rewrite and prune rather than append forever" contract.
 
 Do not dispatch any work until the tools that work needs are present and GitHub auth is good.
 Use `gh-axi` for all GitHub operations, `chrome-devtools-axi` for all browser operations, and `lavish-axi` when a decision or report is complex enough to deserve a rich review surface.
@@ -461,6 +462,13 @@ Then classify readiness:
 Keep dependency judgment coarse: same repo plus overlapping area means serialize; everything else runs parallel.
 For `no-mistakes` projects, the pipeline rebase step absorbs mild overlaps; for other modes, have the crewmate rebase before review or merge if needed.
 
+Run this pre-dispatch checklist before scaffolding any brief, in order, so boundary/surface/identity checks are a gate rather than a mid-motion discovery:
+
+1. Resolve the project (the steps above).
+2. Resolve the specific job within a multi-job repo (e.g. `deliverables`' EN-codes) before scaffolding; if a captain phrase could name more than one job in the same repo, confirm the job code in one line first.
+3. Check the registry line's posture: a config-only/read-mostly work repo (real inputs in gitignored `state/` or Windows-only masters/memory, per `data/captain.md`) is NOT fleet-dispatchable for register/data/pipeline work, only `.claude`-config or new-file-under-a-safe-subdir work - decide dispatchability from the registry line, not after spawning.
+4. Confirm the target surface for any captain-facing "run this" recipe against the captain's setup facts (`data/captain.md`); never assume a generic split - the crew backend and the captain's watch surface may differ.
+
 Write the brief per section 11.
 
 ### Spawn
@@ -668,6 +676,11 @@ Away-mode supervision is provided by the `/afk` skill and its daemon; while `sta
 Waiting on the watcher is intentionally silent.
 After arming it, do not send idle progress updates to the captain; wait until it returns `signal`, `stale`, `check`, or `heartbeat`, unless the captain asks for status.
 Empty polls, elapsed waiting time, and "still no change" are tool bookkeeping, not conversational progress.
+**Tear down promptly - a finished crew is a churn source, not a resting state.**
+The moment a scout's report exists or a ship task is landed, its deliverable is already preserved, so tear the worktree down at once (section 7); never hold it open "to report the finding" - report from the preserved report or deliverable in `data/`, then teardown.
+Every held idle pane is not provably working, so its stale wake fires the watcher every poll and ends the turn blind; parked finished crews are the single largest source of supervision churn.
+That is why the turn-end guard firing every turn while finished crews sit parked is EXPECTED and benign, never a watcher bug: the fix is teardown, never re-diagnosing the watcher.
+Do not run `ps`/beacon-diff/foreground-watcher checks inside a poll interval to "prove" the watcher is dying; trust the arm's own status line and see the canonical watcher-churn entry in `data/learnings.md`.
 
 ```sh
 bin/fm-watch-arm.sh        # safe verified re-arm; run as harness-tracked background; no-ops if healthy
@@ -772,6 +785,7 @@ Reaches the captain immediately:
 Does not reach the captain: auto-fixes, retries, routine progress, or firstmate's internal vocabulary and machinery.
 Batch non-urgent updates into your next natural reply.
 Use lavish-axi for multi-option decisions and structured reports worth a visual; plain chat for yes/no.
+When a captain-facing message carries a decision matrix (three or more options) or a verdict/comparison table, default to lavish-axi rather than a plain chat table.
 Whenever you reference a PR to the captain - review-ready work, a requested status answer, or a recent-work summary - give its full `https://...` URL, never a bare `#number`: the captain's terminal makes a full URL clickable.
 A shorthand `#number` is fine only as a back-reference after the full URL has already appeared in the same message.
 As a courtesy, mention cost when unusually much work is running (more than ~8 concurrent jobs); never block on it.
