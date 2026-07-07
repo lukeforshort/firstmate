@@ -37,6 +37,8 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-marker-lib.sh
 . "$SCRIPT_DIR/fm-marker-lib.sh"
+# shellcheck source=bin/fm-fork-url-lib.sh
+. "$SCRIPT_DIR/fm-fork-url-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
@@ -201,8 +203,13 @@ EOF
 )
     ;;
   *)  # no-mistakes (default)
+    FORK_INIT_NOTE=""
+    FORK_URL="$(fm_fork_url)"
+    if [ -n "$FORK_URL" ]; then
+      FORK_INIT_NOTE=" If this is firstmate's own repo, init with \`no-mistakes init --fork-url $FORK_URL\` so pushes target the captain's fork, not upstream; any other project uses bare init."
+    fi
     SETUP2="
-2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
+2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`.${FORK_INIT_NOTE}"
     RULE1='1. Never push to the default branch. Never merge a PR.'
     DOD=$(cat <<EOF
 # Definition of done

@@ -14,6 +14,14 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+# Red-PR gate (AGENTS.md section 7 "never merge a red PR even under yolo"):
+#   (i) a failing check refuses before gh-axi pr merge
+#   (j) a pending check refuses before gh-axi pr merge, even with --allow-red
+#   (k) a green rollup merges
+#   (l) an empty rollup with --allow-red merges (documented no-CI-repo case)
+#   (m) an empty rollup without --allow-red refuses (fail-closed)
+#   (n) mergeState BLOCKED refuses even with a green rollup
+#   (o) an unreadable pr view refuses (fail-closed)
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -42,13 +50,33 @@ make_case() {
   printf '%s\n' "$case_dir"
 }
 
-# gh-axi mock recording every invocation to a log file, and gh mock answering
-# headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
+# gh-axi mock recording every invocation to a log file, answering the red-PR
+# gate's `pr view --json statusCheckRollup,mergeStateStatus` query from a
+# per-case rollup payload, and a gh mock answering headRefOid for fm-pr-check.sh's
+# pr_head lookup. Args: case_dir head_sha
+#
+# The rollup payload comes from $case_dir/rollup.json when present, else defaults
+# to a single green (COMPLETED/SUCCESS) check with a CLEAN mergeState, so any test
+# that does not exercise the gate still merges. Write rollup.json with
+# set_rollup before running the merge to drive the gate.
 add_gh_mocks() {
   local case_dir=$1 head=$2
-  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+  cat > "$case_dir/fakebin/gh-axi" <<SH
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+printf '%s\n' "\$*" >> "\$FM_TEST_GH_AXI_LOG"
+# The red-PR gate reads the PR's check rollup + mergeState via pr view --json.
+if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+  case " \$* " in
+    *--json*statusCheckRollup*)
+      if [ -f "$case_dir/rollup.json" ]; then
+        cat "$case_dir/rollup.json"
+      else
+        printf '%s\n' '{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}],"mergeStateStatus":"CLEAN"}'
+      fi
+      exit 0
+      ;;
+  esac
+fi
 exit 0
 SH
   cat > "$case_dir/fakebin/gh" <<SH
@@ -65,14 +93,30 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
+# Write a rollup payload the gate mock will serve for pr view --json. Arg 2 is a
+# raw JSON object for {statusCheckRollup, mergeStateStatus}.
+set_rollup() {
+  local case_dir=$1 json=$2
+  printf '%s\n' "$json" > "$case_dir/rollup.json"
+}
+
 # gh-axi mock that fails the merge call but succeeds everything else, so a
 # real merge failure is distinguishable from the recording step.
 add_gh_mocks_merge_fails() {
   local case_dir=$1
-  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+  cat > "$case_dir/fakebin/gh-axi" <<SH
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
-case "${1:-} ${2:-}" in
+printf '%s\n' "\$*" >> "\$FM_TEST_GH_AXI_LOG"
+# Green rollup so the red-PR gate passes and the merge call is reached.
+if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "view" ]; then
+  case " \$* " in
+    *--json*statusCheckRollup*)
+      printf '%s\n' '{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}],"mergeStateStatus":"CLEAN"}'
+      exit 0
+      ;;
+  esac
+fi
+case "\${1:-} \${2:-}" in
   "pr merge") echo "error: pr merge failed" >&2 ; exit 1 ;;
 esac
 exit 0
@@ -295,6 +339,191 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_failing_check_refuses_merge() {
+  local case_dir rc
+  case_dir=$(make_case gate-failing-check)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+  set_rollup "$case_dir" \
+    '{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"FAILURE"}],"mergeStateStatus":"UNSTABLE"}'
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/30 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gate-failing-check: fm-pr-merge should refuse a red PR"
+  assert_grep 'failing checks: ci' "$case_dir/stderr" \
+    "gate-failing-check: refusal did not name the failing check"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "gate-failing-check: gh-axi pr merge was invoked for a red PR"
+  pass "fm-pr-merge refuses a PR with a failing check before merging"
+}
+
+test_pending_check_refuses_merge_even_with_allow_red() {
+  local case_dir rc
+  case_dir=$(make_case gate-pending-check)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
+  set_rollup "$case_dir" \
+    '{"statusCheckRollup":[{"name":"ci","status":"IN_PROGRESS"}],"mergeStateStatus":"UNKNOWN"}'
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 --allow-red \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gate-pending-check: fm-pr-merge should refuse a pending PR even with --allow-red"
+  assert_grep 'pending checks: ci' "$case_dir/stderr" \
+    "gate-pending-check: refusal did not name the pending check"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "gate-pending-check: gh-axi pr merge was invoked for a pending PR"
+  pass "fm-pr-merge refuses a PR with a pending check even under --allow-red"
+}
+
+test_green_rollup_merges() {
+  local case_dir
+  case_dir=$(make_case gate-green)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3
+  set_rollup "$case_dir" \
+    '{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"context":"legacy","state":"SUCCESS"}],"mergeStateStatus":"CLEAN"}'
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "gate-green: fm-pr-merge failed on a green PR"
+
+  grep -qxF 'pr merge 32 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "gate-green: gh-axi pr merge was not invoked for a green PR"
+  pass "fm-pr-merge merges a PR whose checks are all green"
+}
+
+test_empty_rollup_with_allow_red_merges() {
+  local case_dir
+  case_dir=$(make_case gate-empty-allow-red)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4
+  set_rollup "$case_dir" '{"statusCheckRollup":[],"mergeStateStatus":"CLEAN"}'
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/33 --allow-red \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "gate-empty-allow-red: fm-pr-merge failed on empty rollup with --allow-red"
+
+  grep -qxF 'pr merge 33 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "gate-empty-allow-red: gh-axi pr merge was not invoked for the no-CI-repo case"
+  pass "fm-pr-merge merges an empty-rollup (no-CI) PR with --allow-red"
+}
+
+test_empty_rollup_without_flag_refuses() {
+  local case_dir rc
+  case_dir=$(make_case gate-empty-no-flag)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5
+  set_rollup "$case_dir" '{"statusCheckRollup":[],"mergeStateStatus":"CLEAN"}'
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gate-empty-no-flag: fm-pr-merge should refuse an empty rollup without --allow-red"
+  assert_grep 'no configured checks' "$case_dir/stderr" \
+    "gate-empty-no-flag: refusal did not explain the empty rollup"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "gate-empty-no-flag: gh-axi pr merge was invoked for an empty rollup without --allow-red"
+  pass "fm-pr-merge refuses an empty rollup without --allow-red (fail-closed)"
+}
+
+test_blocked_merge_state_refuses() {
+  local case_dir rc
+  case_dir=$(make_case gate-blocked)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6
+  # Green checks but BLOCKED mergeState (e.g. required review missing).
+  set_rollup "$case_dir" \
+    '{"statusCheckRollup":[{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}],"mergeStateStatus":"BLOCKED"}'
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/35 --allow-red \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gate-blocked: fm-pr-merge should refuse a BLOCKED mergeState"
+  assert_grep 'mergeState is BLOCKED' "$case_dir/stderr" \
+    "gate-blocked: refusal did not explain the BLOCKED mergeState"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "gate-blocked: gh-axi pr merge was invoked for a BLOCKED PR"
+  pass "fm-pr-merge refuses a BLOCKED mergeState even with a green rollup"
+}
+
+test_null_rollup_refuses() {
+  local case_dir rc
+  case_dir=$(make_case gate-null-rollup)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f
+  # Valid JSON but no statusCheckRollup array at all (null): must fail-closed,
+  # not be mistaken for an empty rollup.
+  set_rollup "$case_dir" '{"mergeStateStatus":"CLEAN"}'
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/37 --allow-red \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gate-null-rollup: fm-pr-merge should refuse a null rollup (fail-closed)"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "gate-null-rollup: gh-axi pr merge was invoked for a null rollup"
+  pass "fm-pr-merge refuses (fail-closed) when the rollup is null rather than an empty array"
+}
+
+test_unreadable_pr_view_refuses() {
+  local case_dir fakebin rc
+  case_dir=$(make_case gate-unreadable)
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/wt"
+  # gh-axi records invocations and records pr= via pr-check's own gh mock, but
+  # fails the gate's pr view --json query so the gate reads unreadable output.
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  case " $* " in
+    *--json*statusCheckRollup*) echo "error: could not read PR" >&2 ; exit 1 ;;
+  esac
+fi
+exit 0
+SH
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/gh-axi" "$fakebin/gh"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/36 --allow-red \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gate-unreadable: fm-pr-merge should refuse when pr view is unreadable"
+  assert_grep 'could not read PR' "$case_dir/stderr" \
+    "gate-unreadable: refusal did not explain the unreadable check state"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "gate-unreadable: gh-axi pr merge was invoked despite unreadable check state"
+  pass "fm-pr-merge refuses (fail-closed) when the PR check state is unreadable"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -305,3 +534,11 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_failing_check_refuses_merge
+test_pending_check_refuses_merge_even_with_allow_red
+test_green_rollup_merges
+test_empty_rollup_with_allow_red_merges
+test_empty_rollup_without_flag_refuses
+test_blocked_merge_state_refuses
+test_null_rollup_refuses
+test_unreadable_pr_view_refuses

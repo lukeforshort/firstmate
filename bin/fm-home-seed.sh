@@ -27,6 +27,8 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-fork-url-lib.sh
+. "$SCRIPT_DIR/fm-fork-url-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
@@ -778,7 +780,15 @@ initialize_no_mistakes_project() {
     echo "error: no-mistakes command not found; cannot initialize $project in $home" >&2
     return 1
   }
-  ( cd "$dst" && no-mistakes init && no-mistakes doctor ) || {
+  # Firstmate's OWN repo pushes only to the captain's fork (data/captain.md); a
+  # bare init would target the upstream origin and 403. Feed it the configured
+  # fork URL. Any other project has its own origin and keeps bare init.
+  local fork_url init_extra=()
+  if fm_is_firstmate_own_repo "$dst"; then
+    fork_url=$(fm_fork_url)
+    [ -n "$fork_url" ] && init_extra=(--fork-url "$fork_url")
+  fi
+  ( cd "$dst" && no-mistakes init ${init_extra[@]+"${init_extra[@]}"} && no-mistakes doctor ) || {
     echo "error: failed to initialize no-mistakes for $project at $dst" >&2
     return 1
   }
@@ -918,17 +928,21 @@ seed_home() {
   printf 'home=%s\n' "$home"
 }
 
-case "${1:-}" in
-  validate)
-    [ $# -eq 1 ] || { usage; exit 1; }
-    validate_registry
-    ;;
-  -h|--help|'')
-    usage
-    exit 0
-    ;;
-  *)
-    [ $# -ge 3 ] || { usage; exit 1; }
-    seed_home "$@"
-    ;;
-esac
+# Only dispatch when executed directly; sourcing (e.g. from a test) exposes the
+# functions without running usage/seed_home.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  case "${1:-}" in
+    validate)
+      [ $# -eq 1 ] || { usage; exit 1; }
+      validate_registry
+      ;;
+    -h|--help|'')
+      usage
+      exit 0
+      ;;
+    *)
+      [ $# -ge 3 ] || { usage; exit 1; }
+      seed_home "$@"
+      ;;
+  esac
+fi

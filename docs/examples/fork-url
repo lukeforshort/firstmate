@@ -1,0 +1,7 @@
+# config/fork-url - fork push target for firstmate's OWN repo (LOCAL, gitignored).
+# Copy this to config/fork-url and set the single line to the captain's fork.
+# The firstmate-repo `no-mistakes init` call sites read it via
+# bin/fm-fork-url-lib.sh and pass it as `--fork-url`, so the gate pushes to the
+# fork instead of the upstream origin (which 403s). Any other project has its own
+# origin and keeps bare init. Absent config/fork-url = bare init, unchanged.
+https://github.com/lukeforshort/firstmate.git
