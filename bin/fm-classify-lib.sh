@@ -147,6 +147,61 @@ signal_crew_provably_working() {  # <file> ...
   return 0
 }
 
+# The teardown predicate used to decide whether a finished crew's already-secured
+# work can be dry-run-checked. Overridable so the pure-predicate test can shim
+# teardown's exit code; absent, it points at the real sibling script.
+FM_TEARDOWN_BIN="${FM_TEARDOWN_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-teardown.sh}"
+
+# 0 (eligible) iff crew <id> is finished, its deliverable is secured, AND its
+# outcome was already surfaced to the captain - the exact condition under which
+# the watcher may absorb (rather than re-surface) a finished crew's idle stale
+# pane, breaking the finished-crew churn loop. Conservative by construction: this
+# NEVER re-implements teardown's safety logic, it DELEGATES to it, so a crew whose
+# work is not preserved or whose outcome the captain has not seen is never
+# eligible. All three must hold:
+#   (a) NOT provably working - a crew mid-run is never eligible.
+#   (b) deliverable secured - for a scout (kind=scout), data/<id>/report.md
+#       exists; for a ship, fm-teardown.sh <id> --dry-run exits 0 (the single
+#       source of truth for "is this work landed/dirty-free"). A done-but-
+#       awaiting-merge ship refuses the dry-run and is correctly NOT eligible.
+#   (c) outcome already surfaced - the .hb-surfaced-<id> marker (fm-watch.sh's
+#       mark_surfaced) exists and matches the current captain-relevant status
+#       line, proving the terminal outcome reached the captain at least once. A
+#       never-surfaced finish still surfaces normally.
+# NOT a pure read: reuses crew_is_provably_working (a bounded no-mistakes call)
+# and, for ships, runs teardown --dry-run. Callers run it only on a first-sighting
+# stale hash, never every poll, so per-wake triage stays cheap.
+crew_is_teardown_eligible() {  # <id> <state>
+  local id=$1 state=$2 meta kind data report marker surfaced last
+  [ -n "$id" ] || return 1
+  crew_is_provably_working "$id" && return 1
+  meta="$state/$id.meta"
+  kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [ -n "$kind" ] || kind=ship
+  if [ "$kind" = scout ]; then
+    # Resolve the data dir the canonical way every other script does
+    # (fm-teardown.sh, fm-spawn.sh, fm-brief.sh, ...): FM_DATA_OVERRIDE, then
+    # $FM_HOME/data. Deriving it from the state dir would look up the report in the
+    # wrong place whenever FM_STATE_OVERRIDE points at a custom state dir outside
+    # FM_HOME (AGENTS.md section 2 supports that), wrongly judging a secured scout
+    # NOT eligible. Fall back to the state dir's parent only when FM_HOME is unset.
+    data="${FM_DATA_OVERRIDE:-${FM_HOME:-$(dirname "$state")}/data}"
+    report="$data/$id/report.md"
+    [ -f "$report" ] || return 1
+  else
+    "$FM_TEARDOWN_BIN" "$id" --dry-run >/dev/null 2>&1 || return 1
+  fi
+  # Mirrors fm-watch.sh:_hb_surfaced_path; kept literal here so the predicate is
+  # self-contained when the lib is sourced without the watcher.
+  marker="$state/.hb-surfaced-$(printf '%s' "$id" | tr ':/.' '___')"
+  [ -f "$marker" ] || return 1
+  surfaced=$(cat "$marker" 2>/dev/null || true)
+  last=$(last_status_line "$state/$id.status")
+  status_is_captain_relevant "$last" || return 1
+  [ "$surfaced" = "$last" ] || return 1
+  return 0
+}
+
 # 0 (terminal/actionable) if a stale window's last status line is
 # captain-relevant; 1 otherwise, including the no-status case. A 1 only means
 # "non-terminal"; the always-on watcher then applies crew_is_provably_working,

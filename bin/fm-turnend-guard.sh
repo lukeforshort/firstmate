@@ -78,13 +78,27 @@ fm_supervision_status "$STATE" "$GRACE"
 [ "$FM_SUP_IN_FLIGHT" -gt 0 ] || exit 0
 fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && exit 0
 
+# If the blind-turn cause is finished crews parked without teardown, re-arming
+# without tearing them down just re-enters the churn loop. Lead with the exact
+# parked-crew list and the one teardown command so the fix is a copy-paste, not a
+# diagnosis. If none are eligible, the watcher is genuinely down and re-arm is right.
+parked=$(fm_parked_teardown_eligible_ids "$STATE")
 REASON='tasks in flight, no live watcher - run bin/fm-watch-arm.sh as a background task before ending the turn'
 rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
 {
   printf '●%s\n' "$rule"
   printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
   printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
-  printf '●  %s\n' "$REASON"
+  if [ -n "$parked" ]; then
+    printf '●  %s finished crew(s) are parked and are the likely churn source:\n' "$(printf '%s\n' "$parked" | grep -c .)"
+    printf '%s\n' "$parked" | while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      printf '●      %s   tear down: bin/fm-teardown.sh %s\n' "$id" "$id"
+    done
+    printf '●  Tearing these down stops the repeated turn-end blocks; then re-arm.\n'
+  else
+    printf '●  %s\n' "$REASON"
+  fi
   printf '●%s\n' "$rule"
 } >&2
 exit 2

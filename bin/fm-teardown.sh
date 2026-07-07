@@ -37,10 +37,13 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--force | --dry-run]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --dry-run runs every refusal check and exits 0 if teardown would proceed,
+#   non-zero if it would refuse, mutating nothing (no endpoint kill, no worktree
+#   removal, no state change). A pure predicate over the same safety authority.
 #
 # Stale worktree git lock recovery (backlog teardown-lock-race-l2): a crew
 # process killed mid-git-operation can leave a stale .git/worktrees/<wt>/index.lock
@@ -80,9 +83,23 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
-"$FM_ROOT/bin/fm-guard.sh" || true
 ID=$1
 FORCE=${2:-}
+# --dry-run is a pure predicate: it runs every refusal check below and exits
+# 0 if teardown WOULD proceed, non-zero if it would refuse, without killing the
+# endpoint, removing the worktree, or touching any state. It is the single source
+# of truth for "is this work secured" that crew_is_teardown_eligible delegates to
+# (fm-classify-lib.sh), so no safety logic is copied there. --dry-run and --force
+# are mutually exclusive positional modes; --dry-run never forces past a refusal.
+DRY_RUN=
+if [ "$FORCE" = "--dry-run" ]; then
+  DRY_RUN=1
+  FORCE=
+fi
+# The liveness/tangle guard is a supervision-side effect; skip it for a dry-run so
+# the predicate stays silent AND cannot recurse (fm-guard.sh's parked-crew block
+# itself calls fm-teardown.sh --dry-run).
+[ -n "$DRY_RUN" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
@@ -982,13 +999,21 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   else
     safety_rc=$?
     if [ "$safety_rc" -eq "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED" ]; then
-      cleanup_stale_lock_for_safety_check "$WT" || exit 1
-      validate_worktree_teardown_safety || exit 1
+      # A stale git lock blocks the check. The real teardown removes it (a
+      # mutation) and re-checks; a dry-run must not mutate, so it treats a
+      # lock-blocked-but-otherwise-safe worktree as would-proceed.
+      [ -n "$DRY_RUN" ] || { cleanup_stale_lock_for_safety_check "$WT" || exit 1; }
+      [ -n "$DRY_RUN" ] || validate_worktree_teardown_safety || exit 1
     else
       exit 1
     fi
   fi
 fi
+
+# All refusal checks (dirty, landed-work, scout-report, secondmate-in-flight)
+# have passed. For a dry-run, that verdict is the whole answer: teardown WOULD
+# proceed, so exit 0 before the destructive section without mutating anything.
+[ -n "$DRY_RUN" ] && exit 0
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then

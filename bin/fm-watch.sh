@@ -18,7 +18,12 @@
 #                          firstmate hands it to a no-mistakes validation. Only when
 #                          NOT provably working does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
+#                          both surfaced at once - EXCEPT a terminal stale whose
+#                          crew is teardown-eligible (finished, deliverable
+#                          secured, outcome already surfaced) is absorbed with no
+#                          wedge timer, breaking the finished-crew churn loop
+#                          (crew_is_teardown_eligible; FM_DISABLE_TEARDOWN_SUPPRESS
+#                          is the kill-switch). A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
@@ -145,6 +150,17 @@ TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
 # every wake) and let the daemon classify - never absorb here, or the daemon's
 # digest/injection layer would never see the wake.
 afk_present() { [ -e "$STATE/.afk" ]; }
+
+# 0 if a not-provably-working stale crew's idle pane should be ABSORBED because it
+# is teardown-eligible (finished, deliverable secured, outcome already surfaced -
+# crew_is_teardown_eligible, fm-classify-lib.sh). This is the structural break in
+# the finished-crew churn loop. FM_DISABLE_TEARDOWN_SUPPRESS=1 is the field
+# kill-switch: it forces the old surface-always behavior (and the F4 test uses it
+# to reproduce the churn it then proves cured).
+teardown_suppress_stale() {  # <id>
+  [ "${FM_DISABLE_TEARDOWN_SUPPRESS:-}" = 1 ] && return 1
+  crew_is_teardown_eligible "$1" "$STATE"
+}
 
 # Append one line to the triage debug log explaining an absorbed (benign) wake,
 # size-capped so a long benign stretch cannot grow it without bound. Best-effort:
@@ -529,6 +545,14 @@ EOF
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
+            elif teardown_suppress_stale "$(window_to_task "$w" "$STATE")"; then
+              # Finished, deliverable secured, outcome already surfaced: this is
+              # the finished-crew churn case. Absorb like a provably-working stale
+              # (advance .stale-*, no enqueue, no wedge timer) so the idle pane
+              # stops firing every poll while firstmate gets around to teardown.
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              triage_log "absorbed stale (teardown-eligible, already surfaced): $w"
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
