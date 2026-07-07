@@ -93,7 +93,43 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+# The no-mistakes SETUP guidance is fork-aware: when config/fork-url is set in
+# the home, a firstmate-repo init note tells the crewmate to use --fork-url with
+# that URL; absent config/fork-url, the guidance stays bare init (single source
+# of truth in config/fork-url via bin/fm-fork-url-lib.sh).
+test_fork_url_note_present_when_configured() {
+  local home id brief
+  home="$TMP_ROOT/fork-url-home"
+  mkdir -p "$home/data" "$home/config"
+  printf '%s\n' 'https://github.com/lukeforshort/firstmate.git' > "$home/config/fork-url"
+  id="brief-forkurl-d1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "fork-url: brief was not scaffolded"
+  assert_grep "no-mistakes init --fork-url https://github.com/lukeforshort/firstmate.git" "$brief" \
+    "fork-url: configured fork URL note missing from no-mistakes init guidance"
+  pass "fm-brief.sh: no-mistakes init guidance carries the configured fork URL"
+}
+
+test_no_fork_url_note_when_unconfigured() {
+  local home id brief
+  home="$TMP_ROOT/no-fork-url-home"
+  mkdir -p "$home/data"
+  id="brief-noforkurl-d2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "no-fork-url: brief was not scaffolded"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticked init literal must stay literal
+  assert_grep 'run `no-mistakes init`' "$brief" \
+    "no-fork-url: bare no-mistakes init guidance missing"
+  assert_no_grep "--fork-url" "$brief" \
+    "no-fork-url: fork note leaked into a brief with no config/fork-url set"
+  pass "fm-brief.sh: no fork note when config/fork-url is unset (bare init, unchanged)"
+}
+
 test_script_parses
 test_ship_modes_generate_clean_briefs
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_fork_url_note_present_when_configured
+test_no_fork_url_note_when_unconfigured

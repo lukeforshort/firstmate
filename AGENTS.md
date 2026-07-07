@@ -79,6 +79,7 @@ config/secondmate-harness  harness the PRIMARY uses to launch SECONDMATE agents,
 config/backlog-backend  backlog backend override; LOCAL, gitignored; absent or "tasks-axi" = default tasks-axi backend, "manual" = force hand-editing; inherited by secondmate homes (section 10)
 config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; absent = falls through to runtime auto-detection (the runtime firstmate itself is executing inside), then tmux; tmux is the verified reference backend (docs/tmux-backend.md), while herdr, zellij, orca, and cmux are experimental spawn backends (docs/herdr-backend.md, docs/zellij-backend.md, docs/orca-backend.md, docs/cmux-backend.md) - herdr and cmux can also be selected by runtime auto-detection, zellij and orca never are (always explicit), and codex-app is not accepted; see docs/codex-app-backend.md; not inherited into secondmate homes
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
+config/fork-url  fork push target for firstmate's OWN repo; LOCAL, gitignored; single source of truth read by `bin/fm-fork-url-lib.sh` so a firstmate-repo `no-mistakes init` uses `--fork-url` instead of the upstream origin (section 7); absent = bare init, unchanged. Not inherited into secondmate homes
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
@@ -412,6 +413,7 @@ cd projects/<name> && no-mistakes init && no-mistakes doctor
 ```
 
 `no-mistakes init` sets up the local gate: a bare repo plus post-receive hook, the `no-mistakes` git remote, and a database record for the repo (it needs an `origin` remote).
+For firstmate's OWN repo the gate must push to the captain's fork, never upstream, so its init uses `--fork-url` from `config/fork-url` (the init call sites read it via `bin/fm-fork-url-lib.sh`); any other project has its own origin and uses bare init as shown.
 It does **not** vendor any skill into the project - the no-mistakes skill is user-level now, available to every crewmate without a per-project copy.
 So init produces nothing to commit; it is a sanctioned exception to the never-write rule (section 1) only in that it runs git remote/config setup inside the project.
 Touch nothing else.
