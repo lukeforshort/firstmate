@@ -179,7 +179,13 @@ crew_is_teardown_eligible() {  # <id> <state>
   kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
   [ -n "$kind" ] || kind=ship
   if [ "$kind" = scout ]; then
-    data="${FM_DATA_OVERRIDE:-$(dirname "$state")/data}"
+    # Resolve the data dir the canonical way every other script does
+    # (fm-teardown.sh, fm-spawn.sh, fm-brief.sh, ...): FM_DATA_OVERRIDE, then
+    # $FM_HOME/data. Deriving it from the state dir would look up the report in the
+    # wrong place whenever FM_STATE_OVERRIDE points at a custom state dir outside
+    # FM_HOME (AGENTS.md section 2 supports that), wrongly judging a secured scout
+    # NOT eligible. Fall back to the state dir's parent only when FM_HOME is unset.
+    data="${FM_DATA_OVERRIDE:-${FM_HOME:-$(dirname "$state")}/data}"
     report="$data/$id/report.md"
     [ -f "$report" ] || return 1
   else

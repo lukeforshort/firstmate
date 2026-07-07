@@ -83,10 +83,17 @@ fi
 # defined once in fm-classify-lib.sh; this only lists. Always returns 0, and lists
 # nothing when the predicate is unavailable (classify-lib not sourced).
 fm_parked_teardown_eligible_ids() {  # <state-dir>
-  local state=$1 meta id
+  local state=$1 meta id kind
   command -v crew_is_teardown_eligible >/dev/null 2>&1 || return 0
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
+    # Skip secondmates: a secondmate is a persistent, idle-by-design supervisor,
+    # never a finished-crew churn source, so listing it as a "parked finished
+    # crew" would be misleading and would needlessly run teardown's dry-run against
+    # its home. This mirrors fm-watch.sh, which already skips kind=secondmate
+    # windows in its stale loop.
+    kind=$(grep '^kind=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ "$kind" = secondmate ] && continue
     id=$(basename "$meta"); id=${id%.meta}
     crew_is_teardown_eligible "$id" "$state" && printf '%s\n' "$id"
   done

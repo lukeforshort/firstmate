@@ -203,6 +203,9 @@ test_crew_is_teardown_eligible_classifier() {
   local dir state data marker
   dir=$(make_case teardown-eligible); state="$dir/state"; data="$dir/data"
   export FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh"
+  # Pin the data dir explicitly so the scout-report lookup does not depend on
+  # FM_HOME (crew_is_teardown_eligible resolves FM_DATA_OVERRIDE first).
+  export FM_DATA_OVERRIDE="$data"
   export FM_FAKE_CREW_STATE
   # A finished (not-working) scout with its report written and outcome surfaced.
   FM_FAKE_CREW_STATE='state: unknown · source: none · finished'
@@ -240,7 +243,7 @@ SH
   printf 'done: PR https://example.test/pr/9' > "$state/.hb-surfaced-sh"
   FM_FAKE_TEARDOWN_DRYRUN_RC=0 crew_is_teardown_eligible sh "$state" || fail "landed ship (dry-run 0) not eligible"
   FM_FAKE_TEARDOWN_DRYRUN_RC=1 crew_is_teardown_eligible sh "$state" && fail "unlanded ship (dry-run 1) treated as eligible"
-  unset FM_FAKE_CREW_STATE FM_TEARDOWN_BIN
+  unset FM_FAKE_CREW_STATE FM_TEARDOWN_BIN FM_DATA_OVERRIDE
   pass "crew_is_teardown_eligible: eligible only when finished + deliverable secured + outcome already surfaced"
 }
 
@@ -272,7 +275,7 @@ test_teardown_eligible_stale_absorbed_not_surfaced() {
   # Phase 1: fail-safe DISABLED reproduces the churn - the pane surfaces and exits.
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_DISABLE_TEARDOWN_SUPPRESS=1 \
+    FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_DISABLE_TEARDOWN_SUPPRESS=1 \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "Phase 1: watcher did not surface the finished-crew stale with the fail-safe disabled (fixture does not reproduce the churn)"
@@ -284,7 +287,7 @@ test_teardown_eligible_stale_absorbed_not_surfaced() {
   # Phase 2: fail-safe ENABLED (default) - the same pane is absorbed, not surfaced.
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   if ! wait_live "$pid" 30; then
@@ -301,7 +304,7 @@ test_teardown_eligible_stale_absorbed_not_surfaced() {
   rm -f "$data/done-scout/report.md"
   rm -f "$state/.stale-$key" "$state/.stale-since-$key"; : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "Phase 3a: a finished scout with no report was not surfaced (report gone = not secured)"
@@ -312,7 +315,7 @@ test_teardown_eligible_stale_absorbed_not_surfaced() {
   rm -f "$state/.hb-surfaced-done-scout"
   rm -f "$state/.stale-$key" "$state/.stale-since-$key"; : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
     FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   wait_for_exit "$pid" 40 || fail "Phase 3b: a finished scout whose outcome was never surfaced was not surfaced"

@@ -82,7 +82,12 @@ if [ "$watcher_fresh" = false ]; then
   # When the cause is finished crews parked without teardown, re-arming alone just
   # re-enters the churn loop. Lead with the parked-crew list and the one teardown
   # command so the fix surfaces on any fleet-touching command, not only at turn end.
-  parked=$(fm_parked_teardown_eligible_ids "$STATE")
+  # Computed ONLY when not read-only: a read-only guard must stay purely advisory,
+  # and fm_parked_teardown_eligible_ids runs teardown --dry-run (which can inspect
+  # panes, read run state, and even git fetch) against clones the lock-holding
+  # session owns; a read-only session must not touch that other session's fleet.
+  parked=
+  [ "$READ_ONLY" -ne 1 ] && parked=$(fm_parked_teardown_eligible_ids "$STATE")
   rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '●%s\n' "$rule"
