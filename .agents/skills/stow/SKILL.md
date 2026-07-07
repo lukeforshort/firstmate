@@ -43,6 +43,12 @@ The goal is a session that is safe to reset or destroy because everything durabl
    Graduation moves are limited to exactly three: promote a learning to the shared `AGENTS.md` via PR, fold it into `data/captain.md`, or delete a stale entry.
    Do not invent other graduation paths.
 
+   **Learnings-hygiene pass.**
+   Beyond this session's own findings, sweep `data/learnings.md` as a whole for sprawl: several entries restating one topic in slightly different words.
+   Sprawl is itself a failure - a rule spread across five entries is too much to hold under pressure and stops firing.
+   Consolidate each such cluster into one tight canonical entry, keeping the strongest evidence and dropping superseded phrasings, exactly as the file's own "rewrite and prune rather than append forever" contract requires (AGENTS.md section 2).
+   This is the same operation section 3 asks firstmate to run periodically at a low-activity point, not only on an explicit `/stow`.
+
 5. **Report to the captain.**
    Summarize, in plain outcome language (section 9): what was stowed and where, what was filed to the backlog, and whether the session is now safe to reset or destroy - i.e. whether every durable finding from this sweep now lives on disk rather than only in this conversation.
    If something could not be captured yet (for example, project-intrinsic knowledge waiting on a crewmate to land it), say so explicitly rather than reporting the session fully safe.
