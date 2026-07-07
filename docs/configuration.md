@@ -76,6 +76,7 @@ Personal preferences for one captain's fleet live locally in `data/captain.md`; 
 
 Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed right after `data/captain.md` in the session-start context digest.
 The file is created lazily on first learning and follows the same dated, evidence-backed, curated style as `data/captain.md`: rewrite or prune stale entries instead of appending forever.
+Firstmate enforces that contract with a periodic learnings-hygiene pass - at a low-activity point such as an idle fleet at session start, or on an explicit `/stow` - that consolidates overlapping entries on one topic into a single canonical rule.
 
 ## Secondmate routes (data/secondmates.md)
 

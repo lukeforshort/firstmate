@@ -189,6 +189,7 @@ The full ownership rule - what is project-intrinsic versus fleet-private, and ho
 `/stow` sweeps the current session for durable knowledge that only exists in conversation and routes each finding to the most specific disk home.
 Captain preferences go to `data/captain.md`, fleet-local operational facts and gotchas go to `data/learnings.md`, project-intrinsic knowledge goes through normal crewmate delivery into that project's committed `AGENTS.md`, and task-scoped notes or undone next steps go to the backlog.
 Generalizable firstmate knowledge goes to shared tracked docs through the normal PR pipeline; the firstmate-internal `/stow` deliberately never stores findings in either skill directory.
+Beyond the current session's findings, `/stow` also runs a learnings-hygiene pass that consolidates sprawl in `data/learnings.md` - several entries restating one topic - into one canonical entry per cluster; firstmate runs the same pass periodically at a low-activity point, not only on an explicit `/stow`.
 
 ## Local clones stay fresh
 
