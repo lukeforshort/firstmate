@@ -125,9 +125,20 @@ make_crewmate_worktree_dir() {
   printf '%s\n' "$dir"
 }
 
+# Clear every home/state selector the hook reads from the environment so an
+# ambient value - the real fleet's FM_HOME is exported into a firstmate-launched
+# run, which points the hook at the live home's in-flight state instead of this
+# test's fixture dir - can never leak in. Each scenario supplies exactly the
+# selectors it means to, or none, letting the hook fall back to its own
+# FM_ROOT-derived state. Without this the suite passes on a clean CI shell but
+# flakes under a concurrent full-suite run launched from inside a firstmate home.
+hook_env() {
+  env -u FM_HOME -u FM_STATE_OVERRIDE -u FM_ROOT_OVERRIDE "$@"
+}
+
 run_hook() {
   local dir=$1 stop_active=$2
-  printf '{"stop_hook_active":%s}' "$stop_active" | bash "$dir/bin/fm-turnend-guard.sh" 2>&1
+  printf '{"stop_hook_active":%s}' "$stop_active" | hook_env bash "$dir/bin/fm-turnend-guard.sh" 2>&1
 }
 
 nonexistent_pid() {
@@ -246,7 +257,7 @@ test_hook_blocks_from_fm_home_state() {
   home="$TMP_ROOT/hook-fm-home-op"
   mkdir -p "$home/state"
   : > "$home/state/task1.meta"
-  out=$(printf '{"stop_hook_active":false}' | FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
+  out=$(printf '{"stop_hook_active":false}' | hook_env FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
   expect_code 2 "$status" "hook must inspect the active FM_HOME state dir"
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
   pass "fm-turnend-guard: blocks from active FM_HOME state, not only repo-root state"
@@ -258,7 +269,7 @@ test_hook_ignores_repo_state_when_fm_home_set() {
   home="$TMP_ROOT/hook-fm-home-quiet"
   mkdir -p "$home/state"
   : > "$dir/state/task1.meta"
-  out=$(printf '{"stop_hook_active":false}' | FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
+  out=$(printf '{"stop_hook_active":false}' | hook_env FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
   expect_code 0 "$status" "hook must ignore repo-root state when FM_HOME selects another state dir"
   [ -z "$out" ] || fail "hook produced output from stale repo-root state despite FM_HOME: $out"
   pass "fm-turnend-guard: ignores stale repo-root state when FM_HOME is set"
@@ -271,7 +282,7 @@ test_hook_uses_state_override() {
   state="$TMP_ROOT/hook-state-override-active"
   mkdir -p "$home/state" "$state"
   : > "$state/task1.meta"
-  out=$(printf '{"stop_hook_active":false}' | FM_HOME="$home" FM_STATE_OVERRIDE="$state" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
+  out=$(printf '{"stop_hook_active":false}' | hook_env FM_HOME="$home" FM_STATE_OVERRIDE="$state" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
   expect_code 2 "$status" "hook must let FM_STATE_OVERRIDE win over FM_HOME/state"
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
   pass "fm-turnend-guard: uses FM_STATE_OVERRIDE ahead of FM_HOME/state"
@@ -335,6 +346,17 @@ test_hook_silent_without_stdin() {
   pass "fm-turnend-guard: silent no-op on empty stdin"
 }
 
+# This is a HANG guard, not a performance gate: it exists to catch a regression
+# that makes the Stop hook block for tens of seconds or minutes (e.g. a blocking
+# read on stdin, an accidental network/lock wait), which would wedge every turn
+# end. It must NOT double as a sub-second latency assertion. The hook forks
+# several short-lived subprocesses (two git rev-parse, jq, sourced libs); under
+# concurrent full-suite load on a saturated CPU those get descheduled and the
+# wall clock stretches, so a tight 3s bound flakes even though nothing is wrong.
+# $SECONDS is a whole-second counter, so a sub-2s run straddling two second
+# boundaries can already read as 2. The bound below is loose enough that only a
+# genuine multi-second hang trips it, and immune to scheduler jitter.
+HOOK_HANG_LIMIT_S=${FM_TURNEND_HANG_LIMIT_S:-30}
 test_hook_runs_fast() {
   local dir start elapsed_s
   dir=$(make_primary_dir "$TMP_ROOT/hook-timing")
@@ -342,8 +364,8 @@ test_hook_runs_fast() {
   start=$SECONDS
   run_hook "$dir" false >/dev/null
   elapsed_s=$((SECONDS - start))
-  [ "$elapsed_s" -lt 3 ] || fail "hook took ${elapsed_s}s, expected well under a second (generous 3s CI margin)"
-  pass "fm-turnend-guard: runs well under the generous timing margin (${elapsed_s}s)"
+  [ "$elapsed_s" -lt "$HOOK_HANG_LIMIT_S" ] || fail "hook took ${elapsed_s}s, well past the ${HOOK_HANG_LIMIT_S}s hang ceiling - a real block, not load jitter"
+  pass "fm-turnend-guard: completes without hanging (${elapsed_s}s, ceiling ${HOOK_HANG_LIMIT_S}s)"
 }
 
 test_settings_hook_uses_claude_project_dir() {

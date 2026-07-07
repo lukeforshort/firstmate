@@ -26,9 +26,46 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
 SESSION_START="$ROOT/bin/fm-session-start.sh"
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-session-start-tests)
 fm_git_identity fmtest fmtest@example.invalid
+
+# Base PATH the fixtures layer their fakebin in front of. It must supply the host
+# coreutils (git, jq, stat, date, awk, grep, ...) that the composed scripts need,
+# but must NEVER supply any tool fm-bootstrap.sh detects: those come only from a
+# test's fakebin so a scenario that removes one (to force a MISSING line) sees it
+# truly gone. A raw /usr/bin:/bin leaks a host-installed detected tool - e.g.
+# /usr/bin/node exists on this machine - which silently defeats the MISSING-node
+# assertion, so we sanitize instead of trusting the base dirs to lack them. This
+# is the node/PATH-shadowing flake: the suite passes on a bare CI shell but flakes
+# wherever the host happens to ship one of these tools in a system bin dir.
+FM_SESSION_DETECTED_TOOLS='tmux node gh treehouse no-mistakes gh-axi chrome-devtools-axi lavish-axi orca curl'
+make_sanitized_base_path() {  # echoes a bin dir mirroring the raw base dirs minus every detected tool
+  local raw=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+  local sanitized="$TMP_ROOT/base-bin" dir name target
+  mkdir -p "$sanitized"
+  # A space-padded membership set so a name test is a simple substring check, kept
+  # independent of IFS while we split the colon-delimited raw path below.
+  local detected=" $FM_SESSION_DETECTED_TOOLS "
+  local oldifs=$IFS
+  IFS=:
+  # shellcheck disable=SC2086 # deliberate colon-split of the raw PATH string.
+  set -- $raw
+  IFS=$oldifs
+  for dir in "$@"; do
+    [ -d "$dir" ] || continue
+    for target in "$dir"/*; do
+      [ -x "$target" ] || continue
+      name=$(basename "$target")
+      [ -e "$sanitized/$name" ] && continue
+      case "$detected" in
+        *" $name "*) continue ;;
+      esac
+      ln -s "$target" "$sanitized/$name"
+    done
+  done
+  printf '%s\n' "$sanitized"
+}
+BASE_PATH=$(make_sanitized_base_path)
 
 # --- world builders ----------------------------------------------------------
 
