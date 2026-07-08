@@ -208,6 +208,122 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   pass "active crew-dispatch profile allows the raw launch-command escape hatch"
 }
 
+test_active_dispatch_profile_requires_explicit_model_for_ship() {
+  local rec id out status
+  id=profile-model-ship-z17
+  rec=$(make_spawn_case profile-model-ship claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness codex)
+  status=$?
+  expect_code 1 "$status" "ship spawn without explicit model should fail when dispatch profiles are active"
+  assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules" \
+    "spawn did not explain the model backstop"
+  assert_absent "$HOME_DIR/state/$id.meta" "ship model refusal should happen before meta is written"
+  pass "active crew-dispatch profile requires an explicit model for ship spawns"
+}
+
+test_active_dispatch_profile_requires_explicit_model_for_scout() {
+  local rec id out status
+  id=profile-model-scout-z18
+  rec=$(make_spawn_case profile-model-scout claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness codex --scout)
+  status=$?
+  expect_code 1 "$status" "scout spawn without explicit model should fail when dispatch profiles are active"
+  assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules" \
+    "scout refusal did not explain the model backstop"
+  assert_absent "$HOME_DIR/state/$id.meta" "scout model refusal should happen before meta is written"
+  pass "active crew-dispatch profile requires an explicit model for scout spawns"
+}
+
+test_active_dispatch_profile_allows_explicit_model() {
+  local rec id out status
+  id=profile-model-explicit-z19
+  rec=$(make_spawn_case profile-model-explicit claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --harness codex --model gpt-5)
+  status=$?
+  expect_code 0 "$status" "explicit model should satisfy the active dispatch-profile model backstop"
+  assert_contains "$out" "spawned $id harness=codex" "spawn did not report explicit codex harness"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 default
+  pass "active crew-dispatch profile allows an explicit resolved model"
+}
+
+test_no_profile_allows_omitted_model() {
+  local rec id out status
+  id=profile-model-off-z20
+  rec=$(make_spawn_case profile-model-off claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness codex)
+  status=$?
+  expect_code 0 "$status" "omitted model must still fall through to default when no dispatch profile is active"
+  assert_contains "$out" "spawned $id harness=codex" "spawn did not report codex harness"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" codex default default
+  pass "omitted model falls through to default when no dispatch profile is active"
+}
+
+test_active_dispatch_profile_allows_raw_launch_without_model() {
+  local rec id out status launch
+  id=profile-model-raw-z21
+  rec=$(make_spawn_case profile-model-raw claude "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" "custom-agent --flag")
+  status=$?
+  expect_code 0 "$status" "raw launch command should be exempt from the model backstop, matching the harness guard"
+  assert_contains "$out" "spawned $id harness=custom-agent" "raw command spawn did not report its harness"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" custom-agent default default
+  launch=$(cat "$LAUNCH_LOG")
+  [ "$launch" = "custom-agent --flag" ] || fail "raw launch command changed"$'\n'"actual: $launch"
+  pass "active crew-dispatch profile exempts the raw launch-command escape hatch from the model backstop"
+}
+
+test_active_dispatch_profile_does_not_block_secondmate_without_model() {
+  local rec id sm out status
+  id=profile-model-secondmate-z22
+  rec=$(make_spawn_case profile-model-secondmate codex "$id")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "secondmate spawn should be exempt from the dispatch-profile model backstop"
+  assert_contains "$out" "spawned $id harness=codex kind=secondmate" "secondmate launch did not use secondmate harness resolution"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" codex default default
+  pass "active crew-dispatch profile does not block secondmate launches missing a model"
+}
+
+test_active_dispatch_profile_requires_explicit_model_for_batch() {
+  local rec id1 id2 out status
+  id1=profile-model-batch-a-z23
+  id2=profile-model-batch-b-z24
+  rec=$(make_spawn_case profile-model-batch claude "$id1" "$id2")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex)
+  status=$?
+  expect_code 1 "$status" "batch spawn without explicit model should fail when dispatch profiles are active"
+  assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules" \
+    "batch refusal did not explain the model backstop"
+  assert_absent "$HOME_DIR/state/$id1.meta" "batch model refusal should happen before any meta is written"
+  assert_absent "$HOME_DIR/state/$id2.meta" "batch model refusal should happen before any meta is written"
+  pass "active crew-dispatch profile requires an explicit model for crewmate/scout batches"
+}
+
 test_claude_threads_model_and_effort() {
   local rec id out status launch
   id=profile-claude-z2
@@ -370,6 +486,13 @@ test_active_dispatch_profile_requires_explicit_harness_for_scout
 test_active_dispatch_profile_allows_explicit_harness
 test_active_dispatch_profile_allows_positional_harness
 test_active_dispatch_profile_allows_raw_launch_command
+test_active_dispatch_profile_requires_explicit_model_for_ship
+test_active_dispatch_profile_requires_explicit_model_for_scout
+test_active_dispatch_profile_allows_explicit_model
+test_no_profile_allows_omitted_model
+test_active_dispatch_profile_allows_raw_launch_without_model
+test_active_dispatch_profile_does_not_block_secondmate_without_model
+test_active_dispatch_profile_requires_explicit_model_for_batch
 test_claude_threads_model_and_effort
 test_codex_threads_model_and_effort
 test_codex_omits_invalid_max_effort
