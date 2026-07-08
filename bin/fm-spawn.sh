@@ -29,8 +29,11 @@
 #   callers must surface it instead of silently retrying another backend.
 #   With no harness arg, a crewmate/scout spawn resolves the CREW harness only when
 #   config/crew-dispatch.json is absent. When that file exists, crewmate/scout
-#   spawns require an explicit harness so firstmate cannot silently skip dispatch
-#   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
+#   spawns require BOTH an explicit harness and an explicit --model resolved from the
+#   dispatch rules, so firstmate cannot silently skip dispatch profile consultation
+#   and a dropped model cannot fall through to the harness's own default. A raw launch
+#   command carries both inline and is exempt from each. A --secondmate spawn is exempt
+#   from both and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
 #   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|grok)
@@ -238,6 +241,10 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
   fi
+  if [ "$KIND" != secondmate ] && [ "$MODEL_SET" -eq 0 ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
+    echo "error: config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules (the consultation backstop, so a dropped model cannot silently fall through to the harness default)." >&2
+    exit 1
+  fi
   rc=0
   shared_args=()
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
@@ -332,6 +339,27 @@ launch_template() {
     *) return 1 ;;
   esac
 }
+
+# Model backstop, the mirror of the explicit-harness backstop below: when
+# config/crew-dispatch.json is active, a crewmate/scout must also carry an explicit
+# model resolved from the dispatch rules, so a dropped model cannot silently fall
+# through to the harness's own default (which on claude is settings.json's model
+# field). Gated exactly like the harness guard: only KIND != secondmate (secondmates
+# resolve their model from config/secondmate-harness tokens, not the dispatch rules)
+# and only when the file exists. An empty ARG3 (no explicit harness) is left to the
+# harness guard so a launch missing both surfaces the harness refusal first, and the
+# raw launch command (ARG3 with whitespace) is the escape hatch that carries its model
+# inline exactly as it carries its harness inline, so both are exempt just as they are
+# from the harness guard.
+case "$ARG3" in
+  ''|*' '*) : ;;  # no explicit harness (harness guard owns it) or raw escape hatch
+  *)
+    if [ "$KIND" != secondmate ] && [ "$MODEL_SET" -eq 0 ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
+      echo "error: config/crew-dispatch.json is active - pass an explicit model resolved from the dispatch rules (the consultation backstop, so a dropped model cannot silently fall through to the harness default)." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
