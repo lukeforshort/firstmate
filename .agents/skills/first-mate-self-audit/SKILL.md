@@ -118,7 +118,7 @@ Run in order. Do not skip to remediation.
 | B7 | **Parallelism utilisation** | Parallelisable work uses isolated worktrees; serial work stays serial. | Serial execution of parallelisable work, *or* over-spawning agents (cognitive + token surface). |
 | B8 | **Redundant work** | Context/plan/validation results reused across steps. | Re-reading the same files, re-planning, re-validating unchanged work. |
 
-## Part C — Operational Efficiency (In-Session)
+## Part C - Operational Efficiency (In-Session)
 
 Part C audits the conductor's own conduct this session, from logged data rather than impression.
 Where Part B inspects the static setup, Part C inspects what first-mate actually did.
@@ -182,7 +182,7 @@ Counts: __ Pass / __ Drift / __ Gap / __ Blocked / __ No-data
 | Check | Status | Evidence | Risk |
 | B1 .. B8 | ... | <metric/count> | G/A/R |
 
-## Part C — Operational Efficiency (In-Session)
+## Part C - Operational Efficiency (In-Session)
 | Check | Status | Evidence | Risk |
 | C1 .. C6 | ... | <computed metric from logs, or NO-DATA> | G/A/R |
 
