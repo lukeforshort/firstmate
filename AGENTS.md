@@ -391,6 +391,9 @@ Route each piece of durable knowledge to its most specific home:
 When the captain invokes `/stow`, load the `stow` skill.
 It sweeps the current session for uncaptured durable knowledge, routes findings with this table, files undone next steps to the backlog, and reports whether the session is safe to reset.
 
+When the captain asks firstmate to review itself, check the stack, or audit efficiency, cost, cache busts, model tiering, or drift, load the `first-mate-self-audit` skill.
+It runs a read-only scored self-review (system health, operational efficiency, and in-session conduct via `data/cache-meter.sh`) and emits a gated remediation list; it never applies fixes in the same pass.
+
 **Delivery mode (choose at add).** `<mode>` is how a finished change reaches `main`, picked per project when you add it and recorded in the registry line (`fm-project-mode.sh` parses it; `fm-spawn` records it into each task's meta):
 
 - `no-mistakes` (default; `[...]` may be omitted) - full pipeline -> PR -> captain merge. Highest assurance.
