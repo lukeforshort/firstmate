@@ -79,6 +79,37 @@ fm_watcher_healthy() {
   return 0
 }
 
+# fm_watcher_healthy_with_handoff_grace <state-dir> <watch-path> [grace] [home]
+# The turn-end guard's healthy check, hardened against the lock-handoff race:
+# when one backgrounded fm-watch-arm.sh cycle releases the singleton lock just as
+# the next takes it over, there is a sub-second window where the beacon is still
+# FRESH but no live matching watcher holds the lock. Sampling exactly then makes
+# fm_watcher_healthy return false and the guard fires a FALSE block.
+#
+# The fix is narrow. If fm_watcher_healthy already passes, return immediately. If
+# it fails and the beacon is STALE (age >= grace, or absent), that is always a
+# real problem: return 1 with NO grace, exactly as before. ONLY the specific
+# fresh-beacon + unheld-lock combination gets a single bounded re-check: wait
+# FM_HANDOFF_GRACE (small; default 2s) and re-evaluate fm_watcher_healthy ONCE.
+# A handoff resolves within that window and reads healthy; a genuine outage stays
+# unheld and still fires. This widens the real-outage reporting window by at most
+# one FM_HANDOFF_GRACE interval and never touches the stale-beacon path.
+fm_watcher_healthy_with_handoff_grace() {
+  local state=$1 watch_path=$2 grace=${3:-${FM_GUARD_GRACE:-300}} home=${4:-$FM_HOME} \
+    handoff=${FM_HANDOFF_GRACE:-2} beat age
+  if fm_watcher_healthy "$state" "$watch_path" "$grace" "$home"; then
+    return 0
+  fi
+  # Only soften the fresh-beacon + unheld-lock signature. A stale or absent beacon
+  # is always a real outage and must fire immediately with no re-check delay.
+  beat="$state/.last-watcher-beat"
+  [ -e "$beat" ] || return 1
+  age=$(fm_path_age "$beat")
+  [ "$age" -lt "$grace" ] || return 1
+  sleep "$handoff"
+  fm_watcher_healthy "$state" "$watch_path" "$grace" "$home"
+}
+
 fm_lock_clean_known_files() {
   local lockdir=$1
   rm -f \
