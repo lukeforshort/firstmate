@@ -76,7 +76,11 @@ GIT_COMMON_DIR=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || ex
 
 fm_supervision_status "$STATE" "$GRACE"
 [ "$FM_SUP_IN_FLIGHT" -gt 0 ] || exit 0
-fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && exit 0
+# A momentarily-unheld lock during a watcher handoff, while the beacon is still
+# fresh, is a transient self-correcting gap - not a real outage. The bounded
+# re-check absorbs it (fm_watcher_healthy_with_handoff_grace); a stale beacon or a
+# genuinely unheld lock still fires. See bin/fm-wake-lib.sh for the re-check rule.
+fm_watcher_healthy_with_handoff_grace "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && exit 0
 
 # If the blind-turn cause is finished crews parked without teardown, re-arming
 # without tearing them down just re-enters the churn loop. Lead with the exact

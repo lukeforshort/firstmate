@@ -55,9 +55,14 @@ That remains the right predicate for the pull-based guard, where a brief gap aft
 It also exposes `fm_supervision_status` for callers that need the individual fields (in-flight count, beacon freshness/age, queued-wake pending) rather than just the boolean.
 
 `bin/fm-turnend-guard.sh` deliberately uses a sharper end-of-turn predicate.
-It first uses `fm_supervision_status` to count in-flight tasks, then requires `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`.
-That shared live-watcher check is the same one used by `bin/fm-watch-arm.sh`: the recorded `state/.watch.lock/pid` must name a live process, the lock's recorded home/path/pid-identity must match the current live pid, and `state/.last-watcher-beat` must still be within `FM_GUARD_GRACE`.
-This means a just-exited watcher with a fresh leftover beacon still blocks the Stop hook immediately, while a live but wedged watcher with an ancient beacon also blocks.
+It first uses `fm_supervision_status` to count in-flight tasks, then requires `fm_watcher_healthy_with_handoff_grace <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`.
+That wraps the shared `fm_watcher_healthy` live-watcher check - the same one used by `bin/fm-watch-arm.sh`: the recorded `state/.watch.lock/pid` must name a live process, the lock's recorded home/path/pid-identity must match the current live pid, and `state/.last-watcher-beat` must still be within `FM_GUARD_GRACE`.
+This means a just-exited watcher with a fresh leftover beacon still blocks the Stop hook, while a live but wedged watcher with an ancient beacon also blocks.
+
+The wrapper adds one bounded re-check for the lock-handoff race: the singleton watch-lock is momentarily unheld during a handoff, when one backgrounded `bin/fm-watch-arm.sh` cycle releases the lock just as the next takes it over, while the beacon is still fresh; sampling exactly then would fire a false block.
+So on the specific fresh-beacon plus unheld-lock signature only, the guard waits `FM_HANDOFF_GRACE` and re-evaluates `fm_watcher_healthy` once: a handoff resolves within that window and reads healthy, a genuine outage stays unheld and still fires.
+A stale or absent beacon never enters the re-check and fires immediately, so a real outage's reporting window widens by at most one `FM_HANDOFF_GRACE` interval.
+`FM_HANDOFF_GRACE` defaults to 2 seconds and applies only to that signature.
 
 ## Scoping to the PRIMARY only
 

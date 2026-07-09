@@ -240,6 +240,83 @@ test_hook_blocks_with_live_lock_and_stale_beacon() {
   pass "fm-turnend-guard: blocks on a live watcher lock with an ancient beacon"
 }
 
+# --- HOOK: the lock-handoff race (D1 bounded re-check) -----------------------
+#
+# The race: one backgrounded fm-watch-arm.sh cycle releases the singleton lock
+# just as the next takes it over, leaving a sub-second window where the beacon is
+# still fresh but no live matching watcher holds the lock. The guard sampling
+# exactly then must NOT fire a false block; a bounded re-check (FM_HANDOFF_GRACE)
+# lets the handoff resolve. A genuine outage (lock stays unheld past the grace,
+# or a stale beacon) must still fire.
+
+# Spawn a live process, identify it, and record it as this dir's watcher lock,
+# then echo its pid so the caller can reap it. Used to make a live matching lock
+# appear during the handoff re-check window.
+spawn_live_watcher_lock() {
+  local dir=$1 pid identity
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+  }
+  record_watcher_lock "$dir" "$pid" "$identity"
+  printf '%s\n' "$pid"
+}
+
+test_hook_absorbs_handoff_race_fresh_beacon_lock_reappears() {
+  local dir helper out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/hook-handoff-absorb")
+  : > "$dir/state/task1.meta"
+  touch "$dir/state/.last-watcher-beat"
+  # No lock held at the first sample. A background helper records a live matching
+  # watcher lock partway through the handoff grace window, so the bounded re-check
+  # finds supervision healthy and the guard stays silent.
+  helper="$TMP_ROOT/hook-handoff-absorb-helper.pid"
+  (
+    sleep 0.5
+    spawn_live_watcher_lock "$dir" > "$helper"
+  ) &
+  out=$(FM_HANDOFF_GRACE=3 run_hook "$dir" false); status=$?
+  wait
+  pid=$(cat "$helper" 2>/dev/null || true)
+  [ -n "$pid" ] && { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+  expect_code 0 "$status" "hook must absorb the handoff race: fresh beacon, lock reappears within FM_HANDOFF_GRACE"
+  [ -z "$out" ] || fail "hook produced output on an absorbed handoff race: $out"
+  pass "fm-turnend-guard: absorbs the lock-handoff race when a live lock reappears within the grace"
+}
+
+test_hook_blocks_fresh_beacon_lock_stays_unheld_past_grace() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-handoff-outage")
+  : > "$dir/state/task1.meta"
+  touch "$dir/state/.last-watcher-beat"
+  # Fresh beacon but the lock never becomes held: a genuine outage. The bounded
+  # re-check expires and the guard fires exactly as before.
+  out=$(FM_HANDOFF_GRACE=1 run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "hook must still block when a fresh beacon's lock stays unheld past FM_HANDOFF_GRACE"
+  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  pass "fm-turnend-guard: still blocks when the lock stays unheld past the handoff grace"
+}
+
+test_hook_stale_beacon_fires_immediately_no_handoff_grace() {
+  local dir start out status elapsed_s
+  dir=$(make_primary_dir "$TMP_ROOT/hook-handoff-stale")
+  : > "$dir/state/task1.meta"
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  # A stale beacon is always a real problem and must fire immediately, with no
+  # handoff re-check delay applied. Set a large grace and assert the hook returns
+  # fast: it must never sleep the handoff grace on a stale beacon.
+  start=$SECONDS
+  out=$(FM_HANDOFF_GRACE=30 run_hook "$dir" false); status=$?
+  elapsed_s=$((SECONDS - start))
+  expect_code 2 "$status" "hook must block immediately on a stale beacon"
+  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  [ "$elapsed_s" -lt 5 ] || fail "hook waited ${elapsed_s}s on a stale beacon; the handoff grace must not apply to a stale beacon"
+  pass "fm-turnend-guard: a stale beacon fires immediately, with no handoff grace applied"
+}
+
 test_hook_blocks_when_unhealthy_in_primary() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-block")
@@ -394,6 +471,9 @@ test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_when_dead_lock_has_fresh_beacon
 test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_blocks_with_live_lock_and_stale_beacon
+test_hook_absorbs_handoff_race_fresh_beacon_lock_reappears
+test_hook_blocks_fresh_beacon_lock_stays_unheld_past_grace
+test_hook_stale_beacon_fires_immediately_no_handoff_grace
 test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
 test_hook_ignores_repo_state_when_fm_home_set
