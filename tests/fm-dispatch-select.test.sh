@@ -6,6 +6,11 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+# fm-dispatch-select.sh hard-requires jq; keep it reachable on the minimal PATH
+# even when jq is installed outside the standard prefixes (e.g. ~/.local/bin).
+if _jq_path=$(command -v jq 2>/dev/null); then
+  BASE_PATH="$BASE_PATH:${_jq_path%/*}"
+fi
 TMP_ROOT=$(fm_test_tmproot fm-dispatch-select-tests)
 mkdir -p "$TMP_ROOT"
 
