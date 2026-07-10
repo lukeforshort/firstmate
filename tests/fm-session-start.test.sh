@@ -192,7 +192,7 @@ run_session_start() {  # <home> <root> <path>
   # so neutralize any marker leaking from the test runner's own harness session
   # (e.g. CLAUDECODE=1 when the suite runs inside Claude Code) - otherwise every
   # detected-harness assertion would collapse to the runner's harness.
-  CLAUDECODE= PI_CODING_AGENT= GROK_AGENT= \
+  CLAUDECODE='' PI_CODING_AGENT='' GROK_AGENT='' \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
 }
 
