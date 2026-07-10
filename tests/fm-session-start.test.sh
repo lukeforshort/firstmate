@@ -186,7 +186,12 @@ SH
 
 run_session_start() {  # <home> <root> <path>
   local home=$1 root=$2 path=$3
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
+  # Neutralize ambient harness env markers so detect_own follows the fake ps
+  # ancestry (FM_FAKE_HARNESS), not whatever harness this suite runs under. A
+  # runner setting e.g. CLAUDECODE=1 would otherwise force every detected block
+  # to claude and break the pi/other-harness diagnostics.
+  env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
 }
 
 hash_file_for_test() {
@@ -341,7 +346,9 @@ EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
-  rm -f "$fakebin/node"
+  # Remove a detected tool that never lives on the bare BASE_PATH prefixes, so
+  # its absence is genuine (a system node in /usr/bin would defeat rm-ing node).
+  rm -f "$fakebin/gh-axi"
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
@@ -364,7 +371,7 @@ EOF
   [ "$context_line" -lt "$fleet_line" ] || fail "CONTEXT did not precede FLEET STATE"
   [ "$fleet_line" -lt "$next_line" ] || fail "FLEET STATE did not precede NEXT STEP"
 
-  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: node' | head -1 | cut -d: -f1)
+  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: gh-axi' | head -1 | cut -d: -f1)
   [ -n "$missing_line" ] || fail "MISSING diagnostic did not appear at all"
   [ "$missing_line" -lt "$fleet_line" ] || fail "actionable MISSING diagnostic was buried after the bulk fleet-state digest"
 
@@ -484,7 +491,9 @@ $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  rm -f "$fakebin/node"
+  # Remove a detected tool never present on the bare BASE_PATH prefixes, so the
+  # MISSING line is genuine even where a system node exists in /usr/bin.
+  rm -f "$fakebin/gh-axi"
 
   append_wake "$home/state" signal task-z "needs-decision: pick a library"
 
@@ -493,7 +502,7 @@ EOF
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"
   # fm-bootstrap.sh's own exact MISSING-tool line format.
-  assert_contains "$out" "MISSING: node (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
+  assert_contains "$out" "MISSING: gh-axi (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
   # fm-wake-drain.sh's real drained record (raw tab-separated queue line).
   assert_contains "$out" "$(printf 'signal\ttask-z\tneeds-decision: pick a library')" "fm-wake-drain.sh's real drained record did not appear"
 
