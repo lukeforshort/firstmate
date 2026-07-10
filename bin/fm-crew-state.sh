@@ -23,11 +23,17 @@
 #      (from `axi status`, or the coarse `no-mistakes runs` fallback)?
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
-#      the active step is ci, `axi status` alone cannot tell "still waiting on
-#      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
-#      a ci-step log-tail check overrides working -> done once checks read
-#      green, so a green PR is never silently read as still-validating.
+#      checks-passed -> done, failed/cancelled -> failed. Two EXCEPTIONS keep a
+#      terminal label from being read as more final than the evidence supports:
+#      (a) while the active step is ci, `axi status` alone cannot tell "still
+#      waiting on checks" from "checks green, waiting on merge" (see
+#      nm_ci_checks_state) - a ci-step log-tail check overrides working -> done
+#      once checks read green, so a green PR is never silently read as
+#      still-validating; (b) outcome=passed does not itself prove the PR landed
+#      (see pr_landed_state) - its terminal "PR merged/closed" reading is
+#      confirmed by a direct gh read, and an outcome=passed run whose PR is still
+#      OPEN is reported as working (not done), so supervision of unlanded work is
+#      never ended by a false terminal.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -206,13 +212,19 @@ if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
 elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
 elif command -v perl >/dev/null 2>&1; then HAVE_TIMEOUT=perl
 fi
-nm_run() {  # <args...>
+# Bounded command run in the worktree; stdout only, never fails the script. The
+# timeout wrapper keeps a hung tool from stalling a supervision read.
+run_bounded() {  # <cmd> <args...>
+  local cmd=$1; shift
   case "$HAVE_TIMEOUT" in
-    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
+    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" "$cmd" "$@" ) 2>/dev/null || true ;;
+    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" "$cmd" "$@" ) 2>/dev/null || true ;;
+    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" "$cmd" "$@" ) 2>/dev/null || true ;;
     *)        true ;;
   esac
+}
+nm_run() {  # <args...>
+  run_bounded no-mistakes "$@"
 }
 
 # Scalar value of a TOON key in the captured run output ($RUN_OUT).
@@ -389,6 +401,36 @@ nm_runs_status_for_branch() {  # <branch>
   return 0
 }
 
+# Verify a no-mistakes outcome=passed against the PR's actual landed state.
+# outcome=passed NOMINALLY means the PR has merged (or the branch was closed),
+# but no-mistakes has been observed reporting passed while the PR was still OPEN
+# and unmerged (mgmt-audit 2026-07-10, finding B4/L1). A false "PR merged/closed"
+# from this designated supervision truth source is the worst class of read error
+# - it can end supervision of unlanded work - so the terminal merged/closed
+# reading is asserted ONLY when a direct gh read confirms it, never inferred from
+# the outcome label alone (which also covers the checks-green-but-open case).
+# Resolves the PR from the run's own pr: field, else the task meta's pr=. Echoes
+# one of: merged | closed | open | unknown. Bounded and side-effect free; unknown
+# when no PR resolves or gh cannot answer, and the caller then avoids asserting
+# merged/closed rather than guessing.
+pr_landed_state() {
+  local url state
+  url=$(strip_quotes "$(nm_field pr)")
+  [ -n "$url" ] || url=$(meta_value pr)
+  case "$url" in
+    *github.com/*/pull/[0-9]*) ;;
+    *) printf 'unknown'; return ;;
+  esac
+  command -v gh >/dev/null 2>&1 || { printf 'unknown'; return; }
+  state=$(run_bounded gh pr view "$url" --json state -q .state)
+  case "$state" in
+    MERGED) printf 'merged' ;;
+    CLOSED) printf 'closed' ;;
+    OPEN)   printf 'open' ;;
+    *)      printf 'unknown' ;;
+  esac
+}
+
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
@@ -458,7 +500,17 @@ if [ "$HAVE_RUN" = 1 ]; then
 
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+        passed)
+          # "passed" alone does not prove the PR landed (finding B4/L1); confirm
+          # merged/closed with a direct gh read before reporting the terminal
+          # state, and read an open PR as still-in-flight (non-terminal) so
+          # supervision of unlanded work is never ended by a false terminal.
+          case "$(pr_landed_state)" in
+            merged|closed) RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+            open)          emit working run-step "checks passed: PR open, awaiting merge (unmerged per gh)" ;;
+            *)             RUN_STATE="done"; RUN_DETAIL="run passed: checks green (PR merge state unverified)" ;;
+          esac
+          ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
         failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
         cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
