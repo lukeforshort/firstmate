@@ -106,6 +106,7 @@ state/               volatile runtime signals; gitignored
   .hash-* .count-* .stale-* .stale-since-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
+  .last-daemon-beat  away-mode daemon liveness beacon, touched every cycle while the daemon runs; guard and session start alarm when .afk is present but it is stale or the daemon is gone
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
 .no-mistakes/        local validation state and evidence; gitignored
 ```
