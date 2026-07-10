@@ -32,6 +32,8 @@ CONTINUE_LINE=${FM_GUARD_CONTINUE_LINE:-This is a supervision warning only; the 
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
+# shellcheck source=bin/fm-daemon-lib.sh
+. "$SCRIPT_DIR/fm-daemon-lib.sh"
 
 # Worktree-tangle alarm, checked FIRST and independent of in-flight tasks: the
 # firstmate PRIMARY checkout (FM_ROOT) must stay on its default branch. If a
@@ -57,6 +59,35 @@ if [ -n "$tangle_branch" ]; then
       printf "●  then re-validate '%s' in a proper isolated worktree.\n" "$tangle_branch"
     fi
     printf '●%s\n' "$trule"
+  } >&2
+fi
+
+# Away-mode daemon liveness, checked independent of in-flight count and BEFORE
+# the watcher check below. While state/.afk exists the daemon owns supervision
+# (AGENTS.md section 8) and nothing else does, so a silently dead or wedged
+# daemon is a fail-open guardian - the exact gap where a daemon death was read as
+# benign without a check. Alarm loudly the moment any fleet action runs. Not
+# gated on in-flight work: away mode keeps the daemon armed for X mode and late
+# crew reports even with an empty queue. The banner leads (it is the root cause
+# of any watcher-down banner that also fires when the daemon-owned watcher stops).
+if fm_daemon_down "$STATE" "$GRACE"; then
+  if [ "$FM_DAEMON_ALIVE" = false ]; then
+    daemon_cause="its process is gone - no live daemon holds the lock"
+  else
+    daemon_cause="its liveness beacon is stale (last beat: $FM_DAEMON_BEACON_DESC, grace ${GRACE}s) - the daemon may be wedged"
+  fi
+  drule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+  {
+    printf '●%s\n' "$drule"
+    printf '●  AWAY-MODE DAEMON DOWN - SUPERVISION IS OFF\n'
+    printf '●  state/.afk is set, so the away-mode daemon owns supervision, but %s.\n' "$daemon_cause"
+    if [ "$READ_ONLY" -eq 1 ]; then
+      printf '●  This read-only session should report the lapse, not repair it.\n'
+    else
+      printf '●  Load the /afk skill and restart the daemon (bin/fm-afk-start.sh) so away-mode supervision resumes.\n'
+    fi
+    printf '●  %s\n' "$CONTINUE_LINE"
+    printf '●%s\n' "$drule"
   } >&2
 fi
 
