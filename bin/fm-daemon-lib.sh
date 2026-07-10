@@ -96,7 +96,6 @@ fm_daemon_lock_held_by_live_daemon() {
 #   FM_DAEMON_ALIVE        true/false - lock held by a live daemon process
 #   FM_DAEMON_BEACON_FRESH true/false - state/.last-daemon-beat within grace
 #   FM_DAEMON_BEACON_DESC  human-readable beacon age ("never" if absent)
-#   FM_DAEMON_PID          pid recorded in the daemon lock (may be empty)
 # grace defaults to $FM_GUARD_GRACE, then 300, matching fm-guard.sh. Returns 0.
 fm_daemon_status() {
   local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock beat age
@@ -104,13 +103,10 @@ fm_daemon_status() {
   FM_DAEMON_ALIVE=false
   FM_DAEMON_BEACON_FRESH=false
   FM_DAEMON_BEACON_DESC=never
-  FM_DAEMON_PID=
 
   [ -e "$state/.afk" ] && FM_DAEMON_AFK=true
 
   lock="$state/$FM_DAEMON_LOCK_NAME"
-  # shellcheck disable=SC2034 # FM_DAEMON_PID is read by callers (fm-guard.sh) after this returns.
-  FM_DAEMON_PID=$(fm_daemon_lock_pid "$lock" 2>/dev/null || true)
   fm_daemon_lock_held_by_live_daemon "$lock" && FM_DAEMON_ALIVE=true
 
   beat="$state/$FM_DAEMON_BEAT_NAME"

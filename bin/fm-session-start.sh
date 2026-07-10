@@ -289,7 +289,11 @@ if [ -e "$STATE/.afk" ]; then
     else
       printf 'present - BUT the away-mode daemon beacon is stale (last beat: %s); the daemon may be wedged.\n' "$FM_DAEMON_BEACON_DESC"
     fi
-    printf 'Load /afk and restart the daemon (bin/fm-afk-start.sh) so away-mode supervision resumes.\n'
+    if [ "$READ_ONLY" -eq 1 ]; then
+      printf 'This read-only session should report the lapse, not repair it.\n'
+    else
+      printf 'Load /afk and restart the daemon (bin/fm-afk-start.sh) so away-mode supervision resumes.\n'
+    fi
   else
     printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
   fi
