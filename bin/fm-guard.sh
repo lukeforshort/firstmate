@@ -73,8 +73,10 @@ beacon_desc=$FM_SUP_BEACON_DESC
 [ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
 
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
-# bordered banner FIRST so it reads as an alarm, not a buried stderr line.
-if [ "$watcher_fresh" = false ]; then
+# bordered banner FIRST so it reads as an alarm, not a buried stderr line. A live
+# bin/fm-watch-arm.sh actively working to establish that watcher also counts as
+# supervision present - see fm_arm_in_progress in bin/fm-wake-lib.sh.
+if [ "$watcher_fresh" = false ] && ! fm_arm_in_progress "$STATE" "${FM_ARM_GRACE:-30}" "$FM_HOME"; then
   afk=0
   [ -e "$STATE/.afk" ] && afk=1
   queue_arg=0

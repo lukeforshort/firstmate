@@ -154,6 +154,193 @@ test_guard_warnings() {
   pass "guard banner leads when down with pending wakes (re-arm-after-drain) and stays silent when fresh"
 }
 
+test_guard_silent_during_arm_in_progress() {
+  # No watcher beacon at all (the fork/confirm window, before fm-watch.sh's
+  # first touch), but a live, identity-matched fm-watch-arm.sh marker proves
+  # supervision is being actively established, not missing.
+  local dir state armpid err
+  dir=$(make_case guard-arm-progress)
+  state="$dir/state"
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$state/task.meta"
+  sleep 60 &
+  armpid=$!
+  mkdir -p "$state/.watch-arm.marker"
+  printf '%s\n' "$armpid" > "$state/.watch-arm.marker/pid"
+  printf '%s\n' "$dir" > "$state/.watch-arm.marker/fm-home"
+  FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$armpid" > "$state/.watch-arm.marker/pid-identity"
+  FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  kill "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  [ ! -s "$err" ] || fail "guard warned despite a healthy in-progress arm: $(cat "$err")"
+  pass "guard: silent with no fresh watcher beacon while a live in-progress arm marker exists"
+}
+
+test_guard_warns_on_wedged_arm_marker() {
+  # A dead arm marker pid must never suppress the alarm - a wedged/dead arm is
+  # exactly the case that still has to fire.
+  local dir state dead err
+  dir=$(make_case guard-arm-wedged)
+  state="$dir/state"
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$state/task.meta"
+  dead=$(dead_pid)
+  mkdir -p "$state/.watch-arm.marker"
+  printf '%s\n' "$dead" > "$state/.watch-arm.marker/pid"
+  printf '%s\n' "$dir" > "$state/.watch-arm.marker/fm-home"
+  printf '%s\n' "dead arm identity" > "$state/.watch-arm.marker/pid-identity"
+  FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  grep -F 'WATCHER DOWN - SUPERVISION IS OFF' "$err" >/dev/null || fail "guard did not warn despite a dead arm marker pid: $(cat "$err")"
+  pass "guard: still warns when the arm marker names a dead pid"
+}
+
+test_watcher_lock_match_retries_transient_ps_failure() {
+  # fm_pid_identity forks `ps`; under a loaded fleet that fork can transiently
+  # fail for a pid that is, in fact, still alive and unchanged (the real
+  # incident this guards against: a turn-end guard false alarm on a watcher
+  # healthy for ~15 minutes, confirmed matching on an immediate manual
+  # recheck). The first two `ps` invocations here fail; the third succeeds -
+  # fm_watcher_lock_matches_pid must retry through that and still confirm.
+  local dir state fakebin counter real_ps pid identity out
+  dir=$(make_case pid-identity-retry)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  counter="$dir/ps-calls"
+  real_ps=$(command -v ps)
+  : > "$counter"
+  cat > "$fakebin/ps" <<EOF
+#!/usr/bin/env bash
+n=\$(( \$(cat "$counter" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "$counter"
+if [ "\$n" -le 2 ]; then
+  exit 1
+fi
+exec "$real_ps" "\$@"
+EOF
+  chmod +x "$fakebin/ps"
+  sleep 60 &
+  pid=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid")
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_PID_IDENTITY_RETRY_DELAY=0.01 bash -c '
+    . "$1"
+    if fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"; then echo match; else echo nomatch; fi
+  ' _ "$LIB" "$state" "$WATCH" "$pid" "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ "$out" = match ] || fail "identity match did not survive transient ps failures: $out (ps calls: $(cat "$counter" 2>/dev/null || echo 0))"
+  [ "$(cat "$counter" 2>/dev/null || echo 0)" -ge 3 ] || fail "expected at least 3 ps invocations (2 failures + 1 success), got $(cat "$counter" 2>/dev/null || echo 0)"
+  pass "fm_watcher_lock_matches_pid retries a transient ps failure and still confirms identity"
+}
+
+test_watcher_lock_match_fails_on_persistent_ps_failure() {
+  # The retry must be bounded: a `ps` that never recovers (or a genuinely dead
+  # pid) must still fail, never spin or silently pass.
+  local dir state fakebin pid out
+  dir=$(make_case pid-identity-retry-persistent)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  cat > "$fakebin/ps" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$fakebin/ps"
+  sleep 60 &
+  pid=$!
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "some identity" > "$state/.watch.lock/pid-identity"
+  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_PID_IDENTITY_RETRY_DELAY=0.01 bash -c '
+    . "$1"
+    if fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"; then echo match; else echo nomatch; fi
+  ' _ "$LIB" "$state" "$WATCH" "$pid" "$dir")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ "$out" = nomatch ] || fail "identity match wrongly succeeded despite ps never recovering: $out"
+  pass "fm_watcher_lock_matches_pid still fails (bounded retry) when ps never recovers"
+}
+
+test_turnend_guard_silent_during_slow_arm_startup() {
+  # End-to-end repro: a real bin/fm-watch-arm.sh forking a slow-starting
+  # watcher, with bin/fm-turnend-guard.sh sampled from another process while
+  # the watch lock does not exist yet at all - only the arm marker does. This
+  # is the literal race from the bug report: the guard must stay silent here.
+  local dir armpid guardout guardstatus waited lock_pid
+  dir=$(make_case turnend-arm-race)
+  mkdir -p "$dir/bin" "$dir/docs"
+  cp "$ROOT/bin/fm-watch-arm.sh" "$dir/bin/fm-watch-arm.sh"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard.sh"
+  cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
+  cp "$ROOT/bin/fm-supervision-instructions.sh" "$dir/bin/fm-supervision-instructions.sh"
+  cp "$ROOT/bin/fm-harness.sh" "$dir/bin/fm-harness.sh"
+  cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
+  # A stand-in fm-watch.sh that reproduces the real ordering (claim the
+  # singleton lock, THEN write the identity trio as separate non-atomic
+  # steps, THEN loop touching the beacon) but with an injected startup delay
+  # standing in for a loaded system's slow bash-source-plus-fork window.
+  cat > "$dir/bin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+sleep "${FM_TEST_WATCH_STARTUP_DELAY:-2}"
+WATCH_LOCK="$STATE/.watch.lock"
+WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
+fm_lock_try_acquire "$WATCH_LOCK" || { echo "watcher: already running"; exit 0; }
+trap 'fm_lock_release "$WATCH_LOCK"' EXIT
+WATCHER_PID=${BASHPID:-$$}
+printf '%s\n' "$FM_HOME" > "$WATCH_LOCK/fm-home"
+printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path"
+fm_pid_identity "$WATCHER_PID" > "$WATCH_LOCK/pid-identity" 2>/dev/null || true
+while :; do
+  touch "$STATE/.last-watcher-beat"
+  sleep 0.2
+done
+SH
+  chmod +x "$dir/bin/"*.sh
+  git init -q "$dir"
+  git -C "$dir" commit -q --allow-empty -m init
+  : > "$dir/AGENTS.md"
+  : > "$dir/state/task1.meta"
+
+  FM_HOME="$dir" FM_TEST_WATCH_STARTUP_DELAY=2 "$dir/bin/fm-watch-arm.sh" >"$dir/arm.out" 2>&1 &
+  armpid=$!
+
+  waited=0
+  while [ "$waited" -lt 50 ] && [ ! -d "$dir/state/.watch-arm.marker" ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -d "$dir/state/.watch-arm.marker" ] || fail "arm did not write its marker before the fake watch stub finished starting"
+  [ ! -e "$dir/state/.watch.lock" ] || fail "test setup raced: watch lock already exists, the arm-in-progress window was missed"
+
+  guardout=$(printf '{"stop_hook_active":false}' | CLAUDECODE=1 FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard.sh" 2>&1)
+  guardstatus=$?
+
+  # Clean up: let the fake watch stub finish starting, then kill both it and
+  # the arm.
+  waited=0
+  while [ "$waited" -lt 100 ] && ! grep -qF 'watcher: started pid=' "$dir/arm.out" 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  lock_pid=$(cat "$dir/state/.watch.lock/pid" 2>/dev/null || true)
+  [ -z "$lock_pid" ] || kill "$lock_pid" 2>/dev/null || true
+  wait_for_exit "$armpid" 80 >/dev/null
+
+  [ "$guardstatus" -eq 0 ] || fail "turn-end guard falsely blocked during a real in-progress arm startup race: $guardout"
+  [ -z "$guardout" ] || fail "turn-end guard produced output during a real in-progress arm startup race: $guardout"
+  pass "fm-turnend-guard: silent during a real fm-watch-arm.sh startup race (repro: sampled before the watch lock exists)"
+}
+
 test_lock_single_winner_under_concurrency() {
   local dir state lockdir marker i pids pid wins
   dir=$(make_case lock-concurrency)
@@ -708,6 +895,11 @@ test_pid_identity_is_locale_invariant
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
+test_guard_silent_during_arm_in_progress
+test_guard_warns_on_wedged_arm_marker
+test_watcher_lock_match_retries_transient_ps_failure
+test_watcher_lock_match_fails_on_persistent_ps_failure
+test_turnend_guard_silent_during_slow_arm_startup
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency

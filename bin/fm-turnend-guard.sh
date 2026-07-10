@@ -79,6 +79,11 @@ GIT_COMMON_DIR=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || ex
 fm_supervision_status "$STATE" "$GRACE"
 [ "$FM_SUP_IN_FLIGHT" -gt 0 ] || exit 0
 fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && exit 0
+# A live bin/fm-watch-arm.sh actively working to establish that lock also
+# counts as supervision present, not missing - see fm_arm_in_progress in
+# bin/fm-wake-lib.sh for the full contract and why fm_watcher_healthy alone
+# cannot see this window.
+fm_arm_in_progress "$STATE" "${FM_ARM_GRACE:-30}" "$FM_HOME" && exit 0
 
 afk=0
 [ -e "$STATE/.afk" ] && afk=1

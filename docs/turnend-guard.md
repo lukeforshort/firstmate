@@ -27,6 +27,10 @@ If work is in flight, it requires `fm_watcher_healthy <state-dir> <watch-path> [
 That is the same identity-matched live lock and fresh beacon check used by `bin/fm-watch-arm.sh`.
 A stale beacon blocks even if a watcher pid is still live.
 A fresh leftover beacon blocks if the watcher lock is missing, dead, or identity-mismatched.
+If `fm_watcher_healthy` fails, the guard also accepts `fm_arm_in_progress <state-dir> [grace-seconds] [home]` (same file): a live, identity-matched `bin/fm-watch-arm.sh` process that is actively working to establish the watcher lock, refreshed on every polling-loop iteration and cleared on exit.
+This covers the window where the singleton lock's `fm-home`/`watcher-path`/`pid-identity` trio is written as separate, non-atomic steps after the lock's pid is claimed, and the window before the watcher's first beacon touch - both moments where a healthy arm is genuinely in progress but `fm_watcher_healthy` cannot yet see it.
+A wedged or dead arm (marker stale past its own `FM_ARM_GRACE`, default 30s, or a dead marker pid) still blocks like any other unhealthy state.
+`bin/fm-guard.sh` accepts the same `fm_arm_in_progress` fallback before emitting its watcher-down banner.
 
 `FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repo-root `state/`.
 `FM_GUARD_GRACE` controls the beacon freshness window and defaults to 300 seconds.
