@@ -79,7 +79,18 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
   fi
   exit 0
 fi
+# Release the singleton lock on a normal exit AND on a terminating signal.
+# bin/fm-watch-checkpoint.sh bounds a foreground checkpoint with `timeout`, which
+# delivers SIGTERM when the checkpoint elapses. bash does not reliably run an
+# EXIT-only trap when killed by an otherwise-untrapped fatal signal (the release
+# lands only some of the time), so a surviving lock would make the next arm read
+# a false "watcher: already running". Trap the terminating signals explicitly so
+# the release is deterministic; fm_lock_release is ownership-checked and
+# idempotent, so the follow-on EXIT trap safely no-ops.
 trap 'fm_lock_release "$WATCH_LOCK"' EXIT
+trap 'fm_lock_release "$WATCH_LOCK"; exit 143' TERM
+trap 'fm_lock_release "$WATCH_LOCK"; exit 130' INT
+trap 'fm_lock_release "$WATCH_LOCK"; exit 129' HUP
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
