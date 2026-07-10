@@ -224,6 +224,8 @@ These properties must hold:
 - The daemon preserves a single-instance portable lock, crash-loop backoff,
   a pane-gone guard, and a signal-trapped shutdown that flushes buffered
   escalations before exit.
+- The daemon touches a liveness beacon (`state/.last-daemon-beat`) every cycle, mirroring the watcher's own `state/.last-watcher-beat`, and clears it on a clean shutdown.
+- Because the daemon owns supervision while `state/.afk` is set, `bin/fm-guard.sh` and the session-start digest alarm loudly when the flag is present but the daemon process is gone or its beacon has gone stale, so a silent daemon death is detected instead of read as benign.
 
 `FM_INJECT_SKIP` (default `heartbeat`) force-self-handles matching kinds,
 overriding classification.

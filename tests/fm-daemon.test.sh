@@ -1021,6 +1021,126 @@ test_inject_msg_herdr_submits_through_backend_dispatch() {
   pass "inject_msg: dispatches busy-guard/composer-guard/submit through the herdr backend and succeeds on a confirmed empty composer"
 }
 
+# --- B4/L2: away-mode daemon liveness beacon + down detection ----------------
+# Regression for the management-audit finding "nothing owns the daemon": while
+# state/.afk is set the supervise daemon owns supervision, but nothing verified
+# it was alive, so a silent daemon death was read as benign. fm_daemon_down
+# (bin/fm-daemon-lib.sh) is the shared predicate both fm-guard.sh and
+# fm-session-start.sh now consult, mirroring the watcher's own beacon/guard idiom.
+GUARD="$ROOT/bin/fm-guard.sh"
+# A pid well above any real one; kill -0 fails on it, so fm_pid_alive reads dead.
+DAEMON_DEAD_PID=2147480000
+
+# Spawn a throwaway long-lived process to stand in for a live daemon and write a
+# lock owned by it. Echoes the sleeper pid; the caller must kill it when done.
+# A short, stable command line ("sleep") keeps fm_pid_identity deterministic
+# across the write here and the read inside fm-guard.sh's subprocess - a long
+# command line (e.g. the test harness's own $$) can be truncated differently by
+# ps between calls and spuriously fail the identity match. The sleeper's stdout
+# is detached so the enclosing command substitution returns immediately instead
+# of blocking on the inherited pipe.
+_daemon_spawn_live_lock() {  # <state> -> echoes pid
+  local lock="$1/.supervise-daemon.lock" pid
+  sleep 300 >/dev/null 2>&1 &
+  pid=$!
+  mkdir -p "$lock"
+  printf '%s\n' "$pid" > "$lock/pid"
+  fm_pid_identity "$pid" > "$lock/pid-identity"
+  printf '%s\n' "$pid"
+}
+
+# Write a daemon lock owned by a dead pid (the daemon process is gone).
+_daemon_write_dead_lock() {  # <state>
+  local lock="$1/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s\n' "$DAEMON_DEAD_PID" > "$lock/pid"
+  printf 'stale daemon identity\n' > "$lock/pid-identity"
+}
+
+test_daemon_down_true_when_afk_and_process_gone() {
+  local dir state
+  dir=$(make_supercase daemon-down-process-gone)
+  state="$dir/state"
+  date +%s > "$state/.afk"
+  _daemon_write_dead_lock "$state"
+  # No beacon at all: the daemon never came up or vanished without cleanup.
+  fm_daemon_down "$state" || fail "fm_daemon_down should be true when afk is set and no live daemon holds the lock"
+  [ "$FM_DAEMON_ALIVE" = false ] || fail "expected FM_DAEMON_ALIVE=false for a dead daemon"
+  pass "fm_daemon_down: afk set + daemon process gone -> down"
+}
+
+test_daemon_down_true_when_afk_and_beacon_stale() {
+  local dir state livepid down alive fresh
+  dir=$(make_supercase daemon-down-beacon-stale)
+  state="$dir/state"
+  date +%s > "$state/.afk"
+  livepid=$(_daemon_spawn_live_lock "$state")
+  : > "$state/.last-daemon-beat"
+  # grace 0 makes a just-touched beacon read as stale (age 0 is not < 0), so this
+  # exercises the wedged-daemon branch portably without aging file mtimes.
+  if fm_daemon_down "$state" 0; then down=1; else down=0; fi
+  alive=$FM_DAEMON_ALIVE
+  fresh=$FM_DAEMON_BEACON_FRESH
+  kill "$livepid" 2>/dev/null
+  [ "$down" -eq 1 ] || fail "fm_daemon_down should be true when afk is set, daemon alive, but beacon stale"
+  [ "$alive" = true ] || fail "expected FM_DAEMON_ALIVE=true for a wedged daemon"
+  [ "$fresh" = false ] || fail "expected a beyond-grace beacon to read as not fresh"
+  pass "fm_daemon_down: afk set + live daemon + stale beacon -> down (wedged)"
+}
+
+test_daemon_down_false_when_healthy() {
+  local dir state livepid down
+  dir=$(make_supercase daemon-healthy)
+  state="$dir/state"
+  date +%s > "$state/.afk"
+  livepid=$(_daemon_spawn_live_lock "$state")
+  : > "$state/.last-daemon-beat"   # fresh
+  if fm_daemon_down "$state"; then down=1; else down=0; fi
+  kill "$livepid" 2>/dev/null
+  [ "$down" -eq 0 ] || fail "fm_daemon_down should be false for a live daemon with a fresh beacon"
+  pass "fm_daemon_down: afk set + live daemon + fresh beacon -> silent"
+}
+
+test_daemon_down_false_when_afk_absent() {
+  local dir state
+  dir=$(make_supercase daemon-afk-absent)
+  state="$dir/state"
+  _daemon_write_dead_lock "$state"   # daemon dead, but away mode was never requested
+  if fm_daemon_down "$state"; then fail "fm_daemon_down must stay silent when away mode is not requested"; fi
+  pass "fm_daemon_down: no afk -> silent even with a dead daemon"
+}
+
+test_guard_alarms_when_afk_and_daemon_dead() {
+  local dir state out
+  dir=$(make_supercase guard-daemon-dead)
+  state="$dir/state"
+  date +%s > "$state/.afk"
+  _daemon_write_dead_lock "$state"
+  out=$(FM_STATE_OVERRIDE="$state" "$GUARD" 2>&1)
+  assert_contains "$out" "AWAY-MODE DAEMON DOWN" "fm-guard.sh stayed silent while afk was set and the daemon was dead"
+  assert_contains "$out" "its process is gone" "fm-guard.sh did not name the process-gone cause"
+  pass "fm-guard.sh alarms when afk is set but the daemon process is gone"
+}
+
+test_guard_silent_when_afk_and_daemon_healthy() {
+  local dir state out livepid
+  dir=$(make_supercase guard-daemon-healthy)
+  state="$dir/state"
+  date +%s > "$state/.afk"
+  livepid=$(_daemon_spawn_live_lock "$state")
+  : > "$state/.last-daemon-beat"   # fresh
+  out=$(FM_STATE_OVERRIDE="$state" "$GUARD" 2>&1)
+  kill "$livepid" 2>/dev/null
+  assert_not_contains "$out" "AWAY-MODE DAEMON DOWN" "fm-guard.sh false-alarmed on a live daemon with a fresh beacon"
+  pass "fm-guard.sh stays silent when afk is set and the daemon is healthy"
+}
+
+test_daemon_down_true_when_afk_and_process_gone
+test_daemon_down_true_when_afk_and_beacon_stale
+test_daemon_down_false_when_healthy
+test_daemon_down_false_when_afk_absent
+test_guard_alarms_when_afk_and_daemon_dead
+test_guard_silent_when_afk_and_daemon_healthy
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid

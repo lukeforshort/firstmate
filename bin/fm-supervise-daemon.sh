@@ -135,6 +135,12 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$FM_DAEMON_DIR/fm-classify-lib.sh"
 
+# Shared daemon-liveness contract: the canonical beacon name this daemon touches
+# every cycle (FM_DAEMON_BEAT_NAME) and the lock/beacon predicates fm-guard.sh
+# and fm-session-start.sh read to detect a silently dead or wedged daemon.
+# shellcheck source=bin/fm-daemon-lib.sh
+. "$FM_DAEMON_DIR/fm-daemon-lib.sh"
+
 # --- tunables ---------------------------------------------------------------
 FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
 # Fallback BACKEND paired with the fallback target above: "firstmate:0" is a
@@ -862,6 +868,11 @@ fm_super_main() {
   local WATCH_ERR="$STATE/.supervise-daemon.watcher.err"
   local LOCK="$STATE/.supervise-daemon.lock"
   local PIDFILE="$STATE/.supervise-daemon.pid"
+  # Liveness beacon, mirroring the watcher's state/.last-watcher-beat idiom:
+  # this daemon touches it every main-loop cycle, and fm-guard.sh /
+  # fm-session-start.sh alarm when state/.afk is present but the beacon has gone
+  # stale (a wedged daemon) or the lock names no live daemon (a dead one).
+  local BEAT="$STATE/$FM_DAEMON_BEAT_NAME"
   local INJECT_FAIL_SLEEP=${FM_INJECT_FAIL_SLEEP:-$INJECT_FAIL_SLEEP_DEFAULT}
   local CRASH_THRESHOLD=${FM_CRASH_THRESHOLD:-$CRASH_THRESHOLD_DEFAULT}
   local CRASH_WINDOW=${FM_CRASH_WINDOW:-$CRASH_WINDOW_DEFAULT}
@@ -956,6 +967,11 @@ fm_super_main() {
     exit 1
   fi
 
+  # Establish the liveness beacon the moment the daemon is up, before the first
+  # loop iteration (which may sleep on a backoff), so a just-started daemon reads
+  # as alive immediately.
+  touch "$BEAT"
+
   local afk_status="off"
   afk_active "$STATE" && afk_status="on"
   log "daemon starting (pid $$); target=$TARGET; target_source=$target_source; backend=$BACKEND; backend_source=$backend_source; afk=$afk_status; inject_skip='${FM_INJECT_SKIP:-$INJECT_SKIP_DEFAULT}'; stale_escalate=${FM_STALE_ESCALATE_SECS:-$STALE_ESCALATE_SECS_DEFAULT}s; batch=${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}s"
@@ -974,6 +990,9 @@ fm_super_main() {
     fi
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
+    # Clear the liveness beacon on a clean shutdown so a stopped daemon reads as
+    # gone at once, rather than looking alive until the beacon ages out of grace.
+    rm -f "$BEAT" 2>/dev/null || true
     log "daemon shutting down"
     exit 0
   }
@@ -1007,6 +1026,12 @@ fm_super_main() {
 
   local rc reason
   while true; do
+    # Liveness beacon: refresh every cycle, at the very top so it stays fresh
+    # through the pane-gone and crash-backoff branches below too. fm-guard.sh and
+    # fm-session-start.sh read this to tell a live daemon from a wedged/dead one
+    # while state/.afk is set.
+    touch "$BEAT"
+
     # --- pane-gone guard (preserved) ---------------------------------------
     # With the #29 watcher's enqueue-before-suppress, a wake is no longer
     # swallowed by running the watcher with no injection target. We still back

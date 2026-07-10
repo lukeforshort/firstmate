@@ -77,6 +77,12 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# Shared away-mode daemon-liveness contract, so the AFK digest section reports
+# whether the daemon is actually alive rather than assuming it while state/.afk
+# exists (the recovery-path half of the fail-open-guardian fix).
+# shellcheck source=bin/fm-daemon-lib.sh
+. "$SCRIPT_DIR/fm-daemon-lib.sh"
+GRACE=${FM_GUARD_GRACE:-300}
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
@@ -277,7 +283,16 @@ done
 
 subsection "AFK"
 if [ -e "$STATE/.afk" ]; then
-  printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
+  if fm_daemon_down "$STATE" "$GRACE"; then
+    if [ "$FM_DAEMON_ALIVE" = false ]; then
+      printf 'present - BUT the away-mode daemon is NOT running (its process is gone); supervision is OFF.\n'
+    else
+      printf 'present - BUT the away-mode daemon beacon is stale (last beat: %s); the daemon may be wedged.\n' "$FM_DAEMON_BEACON_DESC"
+    fi
+    printf 'Load /afk and restart the daemon (bin/fm-afk-start.sh) so away-mode supervision resumes.\n'
+  else
+    printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
+  fi
 else
   printf 'absent\n'
 fi
