@@ -23,11 +23,59 @@ fm_pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
+# fm_pid_starttime_ticks <pid>
+# Field 22 of /proc/<pid>/stat: starttime in clock ticks since boot, computed
+# once by the kernel at process creation from a monotonic clock - never
+# re-derived from wall time on a later read. Comm (field 2) is parenthesized
+# and may itself contain spaces or ')', so this strips through the LAST ')'
+# rather than assuming a fixed field count from the start of the line.
+fm_pid_starttime_ticks() {
+  local pid=$1 stat rest val
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+  [ -n "$stat" ] || return 1
+  rest=${stat##*)}
+  # shellcheck disable=SC2086  # deliberate word-splitting to index remaining fields
+  set -- $rest
+  # $1 here is field 3 (state); starttime is field 22, the 20th field from here.
+  [ "$#" -ge 20 ] || return 1
+  shift 19
+  val=$1
+  case "$val" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$val"
+}
+
+# fm_pid_identity is the sole owner of "is this the same process, not a
+# reused pid" comparisons across bin/fm-watch-arm.sh, bin/fm-turnend-guard.sh,
+# and bin/fm-guard.sh (via fm_watcher_lock_matches_pid and fm_arm_in_progress
+# below). It used to compare `ps`'s lstart wall-clock string plus command.
+# Measured on a WSL2 host: /proc's boot-time reference (btime) itself drifts
+# (~1s per ~20s of wall time, confirmed via two /proc/stat samples 20s apart
+# and a same-pid lstart shift over the same window) even though
+# `timedatectl` reports the clock as synchronized. lstart is derived from
+# btime on every read, so a live, never-restarted process's own recorded
+# lstart silently walked forward until it no longer matched a fresh read -
+# not a transient hiccup a retry can fix, since the drift is monotonic and
+# every later read keeps disagreeing more, not less.
+# On Linux (including WSL2), starttime in jiffies-since-boot (read via
+# fm_pid_starttime_ticks above) is immune to this: the kernel stores it once
+# at process creation and it is never recomputed from wall time afterward.
+# Hosts without /proc (macOS) fall back to the original lstart+command form;
+# they are not known to exhibit this drift.
 fm_pid_identity() {
-  local pid=$1 out
+  local pid=$1 start command_out out
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
+  if [ -r "/proc/$pid/stat" ]; then
+    start=$(fm_pid_starttime_ticks "$pid") || return 1
+    [ -n "$start" ] || return 1
+    command_out=$(LC_ALL=C ps -p "$pid" -o command= 2>/dev/null) || return 1
+    [ -n "$command_out" ] || return 1
+    printf 'start:%s command:%s\n' "$start" "$(printf '%s' "$command_out" | sed 's/^[[:space:]]*//')"
+    return 0
+  fi
   # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
   # written under one locale but re-read under the machine's ambient locale, which
   # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
@@ -50,16 +98,20 @@ fm_path_age() {
   echo $(( $(date +%s) - m ))
 }
 
-# fm_pid_identity forks `ps` to read the comparison identity; under a heavily
-# loaded fleet (many concurrent crewmate/watcher subprocesses) that fork can
-# transiently fail or return empty output for a pid that is, in fact, still
-# alive and unchanged - confirmed against real supervision evidence: a
-# turn-end guard false alarm on a watcher that had been running healthily for
-# ~15 minutes, whose lock content matched on an immediate manual recheck. Only
-# an EMPTY/failed read is retried, and only while the pid stays alive; a read
-# that succeeds but genuinely mismatches (a different lstart+command, e.g. a
+# fm_pid_identity forks `ps` (and, on Linux, reads /proc) to compute the
+# comparison identity; under a heavily loaded fleet that fork can transiently
+# fail or return empty output for a pid that is, in fact, still alive and
+# unchanged. This bounded retry covers exactly that generic subprocess-fork
+# hazard. It is a narrower fix than it first looks: an earlier turn-end guard
+# false alarm on a watcher healthy for ~15 minutes, whose lock content
+# matched on an immediate manual recheck, turned out to be the /proc
+# btime-drift bug fm_pid_identity itself now fixes (see its own comment) -
+# a persistent, monotonically-growing mismatch that a same-moment retry
+# cannot paper over, since every read keeps disagreeing more, not less. Only
+# an EMPTY/failed read is retried here, and only while the pid stays alive; a
+# read that succeeds but genuinely mismatches (a different identity, e.g. a
 # reused pid) is never retried and fails immediately, so this cannot mask a
-# real identity mismatch, only a flaky `ps` invocation.
+# real identity mismatch, only a flaky subprocess invocation.
 fm_watcher_lock_matches_pid() {
   local state=$1 watch_path=$2 pid=$3 home=${4:-$FM_HOME} lockdir lock_home lock_path lock_identity current_identity attempt
   lockdir="$state/.watch.lock"

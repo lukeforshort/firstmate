@@ -890,8 +890,82 @@ test_pid_identity_is_locale_invariant() {
   pass "fm_pid_identity is locale-invariant across LC_ALL/LC_TIME"
 }
 
+test_pid_starttime_ticks_is_stable_across_reads() {
+  # Direct proof the /proc-based identity primitive does not drift: two reads
+  # of the same live, unchanged pid a couple of seconds apart must agree,
+  # unlike the ps lstart it replaces (measured on a WSL2 host to drift ~1s
+  # per ~20s of wall time via /proc/stat's own boot-time reference).
+  local pid t1 t2
+  if [ ! -r "/proc/$$/stat" ]; then
+    pass "fm_pid_starttime_ticks: skipped (no /proc on this host)"
+    return
+  fi
+  sleep 60 &
+  pid=$!
+  t1=$(bash -c '. "$1"; fm_pid_starttime_ticks "$2"' _ "$LIB" "$pid")
+  sleep 2
+  t2=$(bash -c '. "$1"; fm_pid_starttime_ticks "$2"' _ "$LIB" "$pid")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ -n "$t1" ] || fail "fm_pid_starttime_ticks produced no value"
+  [ "$t1" = "$t2" ] || fail "fm_pid_starttime_ticks drifted across reads of the same live pid (got '$t1' then '$t2')"
+  pass "fm_pid_starttime_ticks is stable across reads of an unchanged live pid"
+}
+
+test_pid_identity_ignores_drifting_lstart_when_proc_available() {
+  # Regression guard for the WSL2 btime-drift incident: measured on a real
+  # host, /proc's boot-time reference creeps forward continuously, which
+  # silently walks `ps`'s lstart forward for a live, never-restarted process
+  # (a persistent, monotonic mismatch a retry cannot fix). fm_pid_identity
+  # must ignore lstart entirely once /proc/<pid>/stat is readable, so two
+  # identity reads of the SAME unchanged process stay byte-identical even
+  # behind a fake `ps` whose lstart output is deliberately drifting a full
+  # minute per call - simulating a shifted-btime read.
+  local dir state fakebin real_ps counter pid identity1 identity2
+  dir=$(make_case pid-identity-btime-drift)
+  if [ ! -r "/proc/$$/stat" ]; then
+    pass "fm_pid_identity: drifting-lstart simulation skipped (no /proc on this host)"
+    return
+  fi
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  counter="$dir/ps-calls"
+  real_ps=$(command -v ps)
+  : > "$counter"
+  cat > "$fakebin/ps" <<EOF
+#!/usr/bin/env bash
+n=\$(( \$(cat "$counter" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "$counter"
+case " \$* " in
+  *" -o lstart= "*)
+    date -d "\$(( \$(date +%s) + n * 60 )) seconds since 1970-01-01" 2>/dev/null \\
+      || date -r "\$(( \$(date +%s) + n * 60 ))"
+    ;;
+  *)
+    exec "$real_ps" "\$@"
+    ;;
+esac
+EOF
+  chmod +x "$fakebin/ps"
+  sleep 60 &
+  pid=$!
+  identity1=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid")
+  identity2=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid")
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ -n "$identity1" ] || fail "fm_pid_identity produced no identity"
+  [ "$identity1" = "$identity2" ] || fail "fm_pid_identity drifted across reads for an unchanged process (got '$identity1' then '$identity2') - lstart leaked back into the /proc-available identity path"
+  case "$identity1" in
+    start:*) ;;
+    *) fail "fm_pid_identity did not take the /proc starttime path on a host with /proc: $identity1" ;;
+  esac
+  pass "fm_pid_identity ignores a drifting ps lstart once /proc is available (simulated btime-drift regression)"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
+test_pid_starttime_ticks_is_stable_across_reads
+test_pid_identity_ignores_drifting_lstart_when_proc_available
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings

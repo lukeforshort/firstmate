@@ -32,6 +32,13 @@ This covers the window where the singleton lock's `fm-home`/`watcher-path`/`pid-
 A wedged or dead arm (marker stale past its own `FM_ARM_GRACE`, default 30s, or a dead marker pid) still blocks like any other unhealthy state.
 `bin/fm-guard.sh` accepts the same `fm_arm_in_progress` fallback before emitting its watcher-down banner.
 
+"Identity-matched" is computed by `fm_pid_identity` in `bin/fm-wake-lib.sh`.
+On a host with `/proc` (Linux, including WSL2) it is the target pid's `/proc/<pid>/stat` starttime field (clock ticks since boot) plus its command, not `ps`'s lstart wall-clock string.
+That switch fixed a real incident: on a WSL2 host, `/proc`'s own boot-time reference measurably drifted forward under continuous wall-clock sampling, which silently walked a live, never-restarted watcher's lstart forward until it stopped matching its own recorded identity - a persistent, monotonically-growing mismatch, not a transient read failure.
+Starttime in ticks-since-boot is set once at process creation and is never recomputed from wall time on a later read, so it is immune to that drift.
+Hosts without `/proc` (macOS) still use the lstart+command form.
+`fm_watcher_lock_matches_pid` also retries an empty/failed identity read up to `FM_PID_IDENTITY_RETRIES` (default 3) times, bounded and only while the pid stays alive, to absorb a generic subprocess-fork hazard under a loaded fleet; it never retries a read that succeeds but genuinely disagrees, so it cannot mask a real identity mismatch.
+
 `FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repo-root `state/`.
 `FM_GUARD_GRACE` controls the beacon freshness window and defaults to 300 seconds.
 If `jq` is missing or hook stdin is empty, the guard fails open and exits 0 because it cannot safely read loop-guard fields.
