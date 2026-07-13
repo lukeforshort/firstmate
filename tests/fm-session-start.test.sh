@@ -1034,8 +1034,33 @@ EOF
   pass "a consistent fleet prints no divergence alarm, and secondmates are excluded from the cross-check"
 }
 
+test_divergence_ignores_note_lines() {
+  local rec root home fakebin out
+  rec=$(new_world divergence-note-lines)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live"
+
+  # A real task row plus two hand-edited note lines that lack the "<id> - <line>"
+  # separator: neither must be extracted as a phantom task id, so no divergence
+  # alarm fires despite there being no task record for the note "ids".
+  printf '## In flight\n- **task-a** - the one real task (repo: demo, since 2026-07-10)\n- **Note:** waiting on the captain\n- [ ] just a reminder\n\n## Queued\n\n## Done\n' \
+    > "$home/data/backlog.md"
+  printf 'window=fm-sess:live\nkind=ship\n' > "$home/state/task-a.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_not_contains "$out" "FLEET DIVERGENCE" "a non-task note line under the In-flight section wrongly raised the divergence alarm"
+
+  pass "hand-edited note lines under the In-flight section do not produce phantom divergence entries"
+}
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
+test_divergence_ignores_note_lines
 test_divergence_backlog_inflight_without_meta
 test_divergence_meta_without_backlog
 test_divergence_dead_endpoint

@@ -236,10 +236,12 @@ backlog_inflight_ids() {
     }
     !inflight { next }
     {
-      if (match($0, /^[-*][[:space:]]+\[[ xX]\][[:space:]]+/)) {
+      if ($0 ~ /^[-*][[:space:]]+\[[ xX]\][[:space:]]+[^[:space:]]+[[:space:]]+-[[:space:]]+/) {
+        match($0, /^[-*][[:space:]]+\[[ xX]\][[:space:]]+/)
         id = substr($0, RLENGTH + 1)
         sub(/[[:space:]].*/, "", id)
-      } else if (match($0, /^[-*][[:space:]]+\*\*/)) {
+      } else if ($0 ~ /^[-*][[:space:]]+\*\*[^*]+\*\*[[:space:]]+-[[:space:]]+/) {
+        match($0, /^[-*][[:space:]]+\*\*/)
         id = substr($0, RLENGTH + 1)
         sub(/\*\*.*/, "", id)
       } else {
