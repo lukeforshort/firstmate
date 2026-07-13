@@ -5,7 +5,9 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+# fm-dispatch-select.sh requires the real jq; make it resolvable regardless of
+# where it is installed, which the bare BASE_PATH may not include.
+BASE_PATH=$(fm_test_base_path jq)
 TMP_ROOT=$(fm_test_tmproot fm-dispatch-select-tests)
 mkdir -p "$TMP_ROOT"
 
