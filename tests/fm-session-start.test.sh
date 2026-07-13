@@ -1044,16 +1044,20 @@ EOF
   make_fake_ps_claude "$fakebin"
   make_fake_tmux "$fakebin" "fm-sess:live"
 
-  # A real task row plus two hand-edited note lines that lack the "<id> - <line>"
-  # separator: neither must be extracted as a phantom task id, so no divergence
-  # alarm fires despite there being no task record for the note "ids".
-  printf '## In flight\n- **task-a** - the one real task (repo: demo, since 2026-07-10)\n- **Note:** waiting on the captain\n- [ ] just a reminder\n\n## Queued\n\n## Done\n' \
+  # A real task row plus hand-edited note lines: two that lack the "<id> - <line>"
+  # separator, and two that DO carry a " - " separator but lack the "(repo: ...)"
+  # marker of a real in-flight row (a checkbox note and a bold note). None must be
+  # extracted as a phantom task id, so no divergence alarm fires despite there
+  # being no task record for the note "ids".
+  printf '## In flight\n- **task-a** - the one real task (repo: demo, since 2026-07-10)\n- **Note:** waiting on the captain\n- [ ] just a reminder\n- [ ] follow-up - ping the captain about the deploy\n- **Reminder** - chase the captain for a decision\n\n## Queued\n\n## Done\n' \
     > "$home/data/backlog.md"
   printf 'window=fm-sess:live\nkind=ship\n' > "$home/state/task-a.meta"
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   assert_not_contains "$out" "FLEET DIVERGENCE" "a non-task note line under the In-flight section wrongly raised the divergence alarm"
+  assert_not_contains "$out" "backlog lists 'follow-up'" "a separator-bearing checkbox note was read as a phantom task id"
+  assert_not_contains "$out" "backlog lists 'Reminder'" "a separator-bearing bold note was read as a phantom task id"
 
   pass "hand-edited note lines under the In-flight section do not produce phantom divergence entries"
 }

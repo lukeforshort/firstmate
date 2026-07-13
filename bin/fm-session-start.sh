@@ -219,10 +219,14 @@ print_status_tail() {
 # backlog_inflight_ids <backlog-file>: emit the task id of every item under the
 # backlog's "## In flight" section, one per line. Respects both documented item
 # forms (AGENTS.md section 10): the checkbox "- [ ] <id> - ..." form and the
-# tasks-axi bold "- **<id>** - ..." form. The canonical row-match forms are
-# owned by bin/fm-fleet-snapshot.sh; this is a lightweight, dependency-free
-# extractor for the cross-check below, not a second full parser. Emits nothing
-# for an absent file or an empty In-flight section.
+# tasks-axi bold "- **<id>** - ..." form. A row is only treated as a task when it
+# also carries the "(repo: <name>, ...)" marker that every real in-flight row
+# includes; that keeps a hand-edited free-form note whose text happens to contain
+# a " - " separator (e.g. "- [ ] follow-up - ping the captain") from being read as
+# a phantom task id and raising a false divergence alarm. The canonical row-match
+# forms are owned by bin/fm-fleet-snapshot.sh; this is a lightweight,
+# dependency-free extractor for the cross-check below, not a second full parser.
+# Emits nothing for an absent file or an empty In-flight section.
 backlog_inflight_ids() {
   local backlog=$1
   [ -f "$backlog" ] || return 0
@@ -247,6 +251,7 @@ backlog_inflight_ids() {
       } else {
         next
       }
+      if ($0 !~ /\(repo:[[:space:]]*[^)[:space:]]/) next
       if (id != "" && id != "-") print id
     }
   ' "$backlog"
