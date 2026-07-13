@@ -43,9 +43,10 @@ STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
 # shellcheck source=bin/fm-symptom-lib.sh
 . "$SCRIPT_DIR/fm-symptom-lib.sh"
 
-# This guard is pull-based: it can fire on every fleet action while supervision is
-# down, so its symptom records are debounced to collapse a storm into one incident
-# per episode (a discrete once-per-event site would pass no debounce).
+# The tangle alarm is pull-based with no episode dedup of its own, so its symptom
+# records are time-debounced to collapse a storm of fleet actions into one incident
+# per episode. (The watcher-down site instead records once per staleness episode by
+# hooking the episode-banner claim below, so it needs no time debounce.)
 GUARD_SYMPTOM_DEBOUNCE=${FM_SYMPTOM_GUARD_DEBOUNCE:-120}
 
 # Record a guard-detected symptom and echo its recurrence advisory (empty below
@@ -188,9 +189,12 @@ if [ "$watcher_fresh" = false ]; then
   elif fm_guard_claim_stale_banner "$STATE" "$episode_key"; then
     print_full_banner=1
     # Record the symptom once per stale episode, hooked to the banner claim
-    # rather than a time debounce: the first full banner of this episode is the
-    # incident, and a read-only advisory pass never records.
-    watcher_ann=$(guard_symptom_advisory watcher-down "no watcher has a fresh beacon while $in_flight task(s) in flight")
+    # rather than a time debounce: the episode claim above already collapses a
+    # stale-beacon storm into one owned banner, so this fires exactly once per
+    # distinct staleness episode - no debounce needed, and two distinct episodes
+    # each record. This branch is non-read-only, so the lapse is never recorded
+    # by a read-only session that only reports it for the lock-holder.
+    watcher_ann=$(fm_symptom_record watcher-down "no watcher has a fresh beacon while $in_flight task(s) in flight" 2>/dev/null || true)
   fi
   if [ "$print_full_banner" -eq 1 ]; then
     afk=0

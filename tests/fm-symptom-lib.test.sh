@@ -265,19 +265,41 @@ test_guard_healthy_records_nothing() {
   pass "fm-guard: a fresh beacon adds no symptom noise"
 }
 
-test_guard_debounce_collapses_rapid_repeats() {
+test_guard_episode_collapses_rapid_repeats() {
   local state nongit
-  state=$(fresh_state guard-debounce)
-  nongit="$TMP_ROOT/guard-debounce-nongit"
+  state=$(fresh_state guard-episode)
+  nongit="$TMP_ROOT/guard-episode-nongit"
   mkdir -p "$nongit"
   : > "$state/task.meta"
-  # Two back-to-back guard fires under the default 120s debounce: the second is
-  # the same episode and must collapse, leaving one incident.
+  # Two back-to-back guard fires in the same staleness episode (the beacon is
+  # absent both times, so the episode key is identical). watcher-down records only
+  # when this session owns the full banner, which the episode claim grants exactly
+  # once per episode - so the second fire records nothing and one incident remains.
   run_guard "$state" "$nongit" >/dev/null
   run_guard "$state" "$nongit" >/dev/null
   [ "$(wc -l < "$state/.symptom-watcher-down.log")" -eq 1 ] \
-    || fail "the pull-based guard must debounce same-episode repeats to one incident"
-  pass "fm-guard: same-episode watcher-down repeats debounce to a single incident"
+    || fail "same-episode watcher-down fires must collapse to one incident via the episode claim"
+  pass "fm-guard: same-episode watcher-down repeats collapse to a single incident"
+}
+
+test_guard_distinct_episodes_each_record() {
+  local state nongit beat
+  state=$(fresh_state guard-episodes)
+  nongit="$TMP_ROOT/guard-episodes-nongit"
+  mkdir -p "$nongit"
+  : > "$state/task.meta"
+  beat="$state/.last-watcher-beat"
+  # Episode 1: beacon absent (key "beat:absent"). Records incident 1.
+  run_guard "$state" "$nongit" >/dev/null
+  # Episode 2: a stale beacon now exists, so the episode key changes to its mtime
+  # and the guard treats this as a fresh staleness episode - even though the
+  # watcher is still down - and records a second incident. This is exactly the
+  # recovered-then-restale case the episode key distinguishes.
+  touch -d '@100' "$beat" 2>/dev/null || touch -t 200001010000 "$beat"
+  run_guard "$state" "$nongit" >/dev/null
+  [ "$(wc -l < "$state/.symptom-watcher-down.log")" -eq 2 ] \
+    || fail "two distinct staleness episodes must record two separate incidents"
+  pass "fm-guard: distinct watcher-down episodes each record an incident"
 }
 
 test_guard_read_only_records_nothing() {
@@ -471,7 +493,8 @@ test_class_known_predicate
 test_guard_watcher_down_announces_at_threshold
 test_guard_watcher_down_silent_below_threshold
 test_guard_healthy_records_nothing
-test_guard_debounce_collapses_rapid_repeats
+test_guard_episode_collapses_rapid_repeats
+test_guard_distinct_episodes_each_record
 test_guard_read_only_records_nothing
 test_guard_worktree_tangle_announces_at_threshold
 # --- SITE: fm-turnend-guard.sh ---
