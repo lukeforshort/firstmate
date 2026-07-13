@@ -52,6 +52,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-symptom-lib.sh
+. "$SCRIPT_DIR/fm-symptom-lib.sh"
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
@@ -128,6 +130,16 @@ print_watch_output() {
   [ -s "$out" ] && cat "$out"
 }
 
+# Print the FAILED status line (stdout, the harness-parsed channel) and, when
+# arm-failed has now recurred to threshold, a loud recurrence advisory on stderr
+# so it rides alongside without corrupting the status protocol.
+emit_arm_failed() {
+  local ann
+  echo "watcher: FAILED - no live watcher with a fresh beacon"
+  ann=$(fm_symptom_record arm-failed "arm could not confirm a live watcher with a fresh beacon" 2>/dev/null || true)
+  [ -n "$ann" ] && printf '● %s\n' "$ann" >&2
+}
+
 mode=arm
 case "${1:-}" in
   ''|arm|--arm) mode=arm ;;
@@ -136,6 +148,10 @@ case "${1:-}" in
 esac
 
 if [ "$mode" = restart ]; then
+  # A hand-forced restart is the workaround the audit (B2/L4) found applied over
+  # and over in place of a structural fix. Count each one; announce at threshold.
+  restart_ann=$(fm_symptom_record forced-restart "operator forced a watcher restart" 2>/dev/null || true)
+  [ -n "$restart_ann" ] && printf '● %s\n' "$restart_ann" >&2
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   if fm_pid_alive "$lock_pid"; then
@@ -182,7 +198,7 @@ trap 'cleanup_child; exit 129' HUP
 trap 'cleanup_child; exit 143' TERM INT
 
 child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
-  echo "watcher: FAILED - no live watcher with a fresh beacon"
+  emit_arm_failed
   exit 1
 }
 "$WATCH" >"$child_out" &
@@ -233,7 +249,7 @@ while :; do
 done
 
 trap - HUP TERM INT
-echo "watcher: FAILED - no live watcher with a fresh beacon"
+emit_arm_failed
 cleanup_child
 wait "$child" 2>/dev/null || true
 exit 1

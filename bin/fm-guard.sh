@@ -40,6 +40,21 @@ STALE_BANNER_MARKER="$STATE/.guard-watcher-stale-banner"
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
+# shellcheck source=bin/fm-symptom-lib.sh
+. "$SCRIPT_DIR/fm-symptom-lib.sh"
+
+# This guard is pull-based: it can fire on every fleet action while supervision is
+# down, so its symptom records are debounced to collapse a storm into one incident
+# per episode (a discrete once-per-event site would pass no debounce).
+GUARD_SYMPTOM_DEBOUNCE=${FM_SYMPTOM_GUARD_DEBOUNCE:-120}
+
+# Record a guard-detected symptom and echo its recurrence advisory (empty below
+# threshold). A read-only advisory pass belongs to another session that holds the
+# fleet lock, so it never records: this session is not the one acting on it.
+guard_symptom_advisory() {  # <class> <detail>
+  [ "$READ_ONLY" -eq 1 ] && return 0
+  fm_symptom_record "$1" "$2" "$GUARD_SYMPTOM_DEBOUNCE" 2>/dev/null || true
+}
 
 # Deterministic episode key from beacon state: same continuous stale beacon
 # (or continuous absence) shares a key; a recovered-then-restale beacon gets a
@@ -122,6 +137,7 @@ fm_guard_clear_stale_banner() {
 tangle_branch=$(fm_primary_tangle_branch "$FM_ROOT" || true)
 if [ -n "$tangle_branch" ]; then
   tangle_default=$(fm_default_branch "$FM_ROOT" 2>/dev/null || echo main)
+  tangle_ann=$(guard_symptom_advisory worktree-tangle "primary checkout stranded on '$tangle_branch' instead of '$tangle_default'")
   trule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '●%s\n' "$trule"
@@ -136,6 +152,7 @@ if [ -n "$tangle_branch" ]; then
       printf '●      git -C %s checkout %s\n' "$FM_ROOT" "$tangle_default"
       printf "●  then re-validate '%s' in a proper isolated worktree.\n" "$tangle_branch"
     fi
+    [ -n "$tangle_ann" ] && printf '●  %s\n' "$tangle_ann"
     printf '●%s\n' "$trule"
   } >&2
 fi
@@ -165,10 +182,15 @@ if [ "$watcher_fresh" = false ]; then
   episode_key=$(fm_guard_stale_episode_key "$STATE")
   episode_key=${episode_key%$'\n'}
   print_full_banner=0
+  watcher_ann=""
   if [ "$READ_ONLY" -eq 1 ]; then
     fm_guard_stale_banner_seen "$STATE" "$episode_key" || print_full_banner=1
   elif fm_guard_claim_stale_banner "$STATE" "$episode_key"; then
     print_full_banner=1
+    # Record the symptom once per stale episode, hooked to the banner claim
+    # rather than a time debounce: the first full banner of this episode is the
+    # incident, and a read-only advisory pass never records.
+    watcher_ann=$(guard_symptom_advisory watcher-down "no watcher has a fresh beacon while $in_flight task(s) in flight")
   fi
   if [ "$print_full_banner" -eq 1 ]; then
     afk=0
@@ -195,6 +217,7 @@ if [ "$watcher_fresh" = false ]; then
       fi
       printf '●  %s\n' "$CONTINUE_LINE"
       printf '●  %s\n' "$fix"
+      [ -n "$watcher_ann" ] && printf '●  %s\n' "$watcher_ann"
       printf '●%s\n' "$rule"
     } >&2
   else

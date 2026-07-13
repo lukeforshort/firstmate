@@ -47,6 +47,8 @@ WATCH="$SCRIPT_DIR/fm-watch.sh"
 
 # shellcheck source=bin/fm-supervision-lib.sh
 . "$SCRIPT_DIR/fm-supervision-lib.sh"
+# shellcheck source=bin/fm-symptom-lib.sh
+. "$SCRIPT_DIR/fm-symptom-lib.sh"
 
 # Read the whole turn-end hook payload once; never block on unreadable/absent
 # stdin.
@@ -122,12 +124,18 @@ x_mode=0
 [ -f "$CONFIG/x-mode.env" ] && x_mode=1
 REASON=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
   || printf '%s\n' 'tasks in flight, no live watcher - resume supervision according to the session-start operating block before ending the turn')
+# A turn-end block on a healthy-looking lock is exactly the recurring symptom the
+# audit (B2/L4) flagged: re-verified by hand every time, never structurally fixed.
+# Count it (once per turn - the loop-guard above bounds this) and fold the
+# recurrence advisory into the banner at threshold.
+SYMPTOM_ANN=$(fm_symptom_record guard-blind-turn "turn-end guard blocked: no live watcher holds this home lock while work is in flight" 2>/dev/null || true)
 rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
 {
   printf '●%s\n' "$rule"
   printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
   printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
   printf '●  %s\n' "$REASON"
+  [ -n "$SYMPTOM_ANN" ] && printf '●  %s\n' "$SYMPTOM_ANN"
   printf '●%s\n' "$rule"
 } >&2
 exit 2

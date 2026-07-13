@@ -104,6 +104,7 @@ state/               volatile runtime signals; gitignored
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
   .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
   .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
+  .symptom-*.log     durable supervision-symptom recurrence logs (one per coarse class), appended at the guard/arm detection sites; at threshold the site's banner escalates a recurring symptom to file-a-structural-fix instead of another hand-workaround (bin/fm-symptom-lib.sh)
   .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
 .no-mistakes/        local validation state and evidence; gitignored
 ```
