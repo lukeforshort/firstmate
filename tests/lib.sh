@@ -76,6 +76,25 @@ fm_test_tmproot() {
   printf '%s\n' "$root"
 }
 
+# --- BASE_PATH / real-tool resolution ---------------------------------------
+
+# fm_test_base_path [tool...]: echo a BASE_PATH-style PATH for tests that
+# shadow PATH with a fakebin dir. Starts from FM_TEST_BASE_PATH (or the
+# standard system dirs) and prepends the real directory of each named tool
+# that resolves on the host, so a test stays hermetic to fakebin overrides
+# while still finding a real tool installed somewhere the bare BASE_PATH may
+# not cover (Homebrew, Nix profile bins, ~/.local/bin, etc.). Generalizes the
+# JQ_DIR pattern from fm-x-mode.test.sh; callers that need the real tool
+# should pass it here rather than re-deriving its directory.
+fm_test_base_path() {
+  local base=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin} tool dir
+  for tool in "$@"; do
+    dir=$(command -v "$tool" 2>/dev/null) && dir=$(dirname "$dir") || dir=
+    [ -n "$dir" ] && base="$dir:$base"
+  done
+  printf '%s\n' "$base"
+}
+
 # --- fakebin / PATH shims ---------------------------------------------------
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
