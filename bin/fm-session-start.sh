@@ -216,6 +216,40 @@ print_status_tail() {
   tail -n "$STATUS_TAIL" "$status"
 }
 
+# backlog_inflight_ids <backlog-file>: emit the task id of every item under the
+# backlog's "## In flight" section, one per line. Respects both documented item
+# forms (AGENTS.md section 10): the checkbox "- [ ] <id> - ..." form and the
+# tasks-axi bold "- **<id>** - ..." form. The canonical row-match forms are
+# owned by bin/fm-fleet-snapshot.sh; this is a lightweight, dependency-free
+# extractor for the cross-check below, not a second full parser. Emits nothing
+# for an absent file or an empty In-flight section.
+backlog_inflight_ids() {
+  local backlog=$1
+  [ -f "$backlog" ] || return 0
+  awk '
+    /^##[[:space:]]/ {
+      hdr = $0
+      sub(/^##[[:space:]]+/, "", hdr)
+      sub(/[[:space:]]+$/, "", hdr)
+      inflight = (tolower(hdr) == "in flight")
+      next
+    }
+    !inflight { next }
+    {
+      if (match($0, /^[-*][[:space:]]+\[[ xX]\][[:space:]]+/)) {
+        id = substr($0, RLENGTH + 1)
+        sub(/[[:space:]].*/, "", id)
+      } else if (match($0, /^[-*][[:space:]]+\*\*/)) {
+        id = substr($0, RLENGTH + 1)
+        sub(/\*\*.*/, "", id)
+      } else {
+        next
+      }
+      if (id != "" && id != "-") print id
+    }
+  ' "$backlog"
+}
+
 hash_file() {
   local file=$1
   [ -f "$file" ] || return 1
@@ -338,6 +372,15 @@ print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
 
 subsection "In-flight tasks (state/*.meta)"
 META_FOUND=0
+# Accumulate the cross-check inputs while the loop already has each meta in
+# hand: a space-delimited set of ship/scout task ids (for membership tests) and
+# newline-delimited lists of the same ids and of any whose endpoint reads dead
+# (for iteration). Secondmates are excluded from every case: they are not
+# backlog items, and their liveness is owned by bootstrap's dedicated
+# SECONDMATE_LIVENESS sweep, so cross-checking them here would only double-report.
+TASK_META_SET=' '
+TASK_META_LIST=''
+DEAD_META_LIST=''
 for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] || continue
   META_FOUND=1
@@ -345,6 +388,7 @@ for meta in "$STATE"/*.meta; do
   printf '\n--- %s ---\n' "$id"
   cat "$meta"
 
+  kind=$(fm_meta_get "$meta" kind)
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
   if [ -n "$window" ]; then
@@ -353,9 +397,17 @@ for meta in "$STATE"/*.meta; do
       printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
     else
       printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+      [ "$kind" = secondmate ] || DEAD_META_LIST="$DEAD_META_LIST$id
+"
     fi
   else
     printf 'endpoint: unknown (no window recorded)\n'
+  fi
+
+  if [ "$kind" != secondmate ]; then
+    TASK_META_SET="$TASK_META_SET$id "
+    TASK_META_LIST="$TASK_META_LIST$id
+"
   fi
 
   status="$STATE/$id.status"
@@ -366,6 +418,76 @@ for meta in "$STATE"/*.meta; do
   fi
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'
+
+# --- record/reality cross-check ----------------------------------------
+# Cross-check the three fleet-state sources printed above - backlog "## In
+# flight" items, task records (state/*.meta), and the live endpoint reads just
+# computed - and raise ONE loud, bordered alarm when they disagree, instead of
+# leaving the divergence for a human to catch across three separately-printed
+# sources. This closes the management-audit blind spot (B4/L3) where records and
+# reality could drift apart undetected. It reuses the loop's alive/dead reads and
+# a single cheap backlog scan: no second probe, no new deep per-task read, so the
+# digest stays fast and bounded. Silent when everything agrees, so a consistent
+# fleet prints no new output.
+DIVERGENCE=''
+# Cases 1 and 2 compare the backlog against task records, so they only run when
+# the backlog file is present. An ABSENT backlog is already flagged loudly above
+# with a documented rebuild remedy; firing "not in backlog" for every meta then
+# would only add noise.
+if [ -f "$DATA/backlog.md" ]; then
+  INFLIGHT_SET=' '
+  # Case 1: a backlog In-flight item with no matching task record.
+  while IFS= read -r bid; do
+    [ -n "$bid" ] || continue
+    INFLIGHT_SET="$INFLIGHT_SET$bid "
+    case "$TASK_META_SET" in
+      *" $bid "*) ;;
+      *) DIVERGENCE="${DIVERGENCE}backlog lists '$bid' as in-flight, but no task record (state/$bid.meta) exists.
+" ;;
+    esac
+  done <<EOF
+$(backlog_inflight_ids "$DATA/backlog.md")
+EOF
+  # Case 2: a task record with no matching backlog In-flight entry.
+  while IFS= read -r mid; do
+    [ -n "$mid" ] || continue
+    case "$INFLIGHT_SET" in
+      *" $mid "*) ;;
+      *) DIVERGENCE="${DIVERGENCE}task record state/$mid.meta exists, but '$mid' is not listed in the backlog In-flight section.
+" ;;
+    esac
+  done <<EOF
+$TASK_META_LIST
+EOF
+fi
+# Case 3: a task recorded in-flight whose endpoint read dead. Independent of the
+# backlog, so it runs even when the backlog file is absent.
+while IFS= read -r did; do
+  [ -n "$did" ] || continue
+  DIVERGENCE="${DIVERGENCE}'$did' is recorded in-flight, but its endpoint reads dead - confirm with a current-state read, then recover or tear it down.
+"
+done <<EOF
+$DEAD_META_LIST
+EOF
+
+if [ -n "$DIVERGENCE" ]; then
+  DBAR='●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+  printf '\n%s\n' "$DBAR"
+  printf '●  FLEET DIVERGENCE - RECORDS AND REALITY DISAGREE\n'
+  while IFS= read -r dline; do
+    [ -n "$dline" ] && printf '●  %s\n' "$dline"
+  done <<EOF
+$DIVERGENCE
+EOF
+  if [ "$READ_ONLY" -eq 1 ]; then
+    printf '●  This read-only session should report the divergence, not reconcile it -\n'
+    printf '●  leave that to the session holding the fleet lock.\n'
+  else
+    printf '●  Reconcile before trusting this fleet state: align the backlog and task\n'
+    printf '●  records, and recover or tear down any task whose process is gone.\n'
+  fi
+  printf '%s\n' "$DBAR"
+fi
 
 subsection "Orphan status logs (state/*.status without matching .meta)"
 ORPHAN_STATUS_FOUND=0

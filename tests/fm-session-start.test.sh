@@ -901,8 +901,146 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+# --- record/reality cross-check: divergence alarm ----------------------------
+
+# The digest cross-checks its three fleet-state sources (backlog "## In flight",
+# task records state/*.meta, and the live endpoint reads) and raises ONE loud,
+# bordered alarm when they disagree, instead of silently printing each source
+# and leaving a human to notice the drift (management-audit finding B4/L3).
+
+test_divergence_backlog_inflight_without_meta() {
+  local rec root home fakebin out
+  rec=$(new_world divergence-backlog-no-meta)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  # Bold tasks-axi in-flight form, no matching state/ghost-x.meta.
+  printf '## In flight\n- **ghost-x** - a task the backlog thinks is live (repo: demo, since 2026-07-10)\n\n## Queued\n\n## Done\n' \
+    > "$home/data/backlog.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "FLEET DIVERGENCE - RECORDS AND REALITY DISAGREE" "no divergence alarm for a backlog In-flight item without a task record"
+  assert_contains "$out" "backlog lists 'ghost-x' as in-flight, but no task record (state/ghost-x.meta) exists." "divergence alarm did not name the record-less backlog item"
+
+  pass "a backlog In-flight item with no matching task record raises the divergence alarm"
+}
+
+test_divergence_meta_without_backlog() {
+  local rec root home fakebin out
+  rec=$(new_world divergence-meta-no-backlog)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:stray"
+
+  # A live ship task record the backlog In-flight section never mentions. Give it
+  # a LIVE endpoint so only case 2 (missing backlog entry) fires, not case 3.
+  printf 'window=fm-sess:stray\nkind=ship\n' > "$home/state/stray-y.meta"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "FLEET DIVERGENCE - RECORDS AND REALITY DISAGREE" "no divergence alarm for a task record missing from the backlog"
+  assert_contains "$out" "task record state/stray-y.meta exists, but 'stray-y' is not listed in the backlog In-flight section." "divergence alarm did not name the backlog-less task record"
+  assert_not_contains "$out" "'stray-y' is recorded in-flight, but its endpoint reads dead" "case 3 wrongly fired for a live endpoint"
+
+  pass "a task record with no matching backlog In-flight entry raises the divergence alarm"
+}
+
+test_divergence_dead_endpoint() {
+  local rec root home fakebin out
+  rec=$(new_world divergence-dead-endpoint)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live-only"
+
+  # Backlog and record agree the task is in-flight; its endpoint is gone. Only
+  # case 3 should fire (cases 1 and 2 are clean).
+  printf 'window=fm-sess:dying\nkind=ship\n' > "$home/state/dying-z.meta"
+  printf '## In flight\n- [ ] dying-z - a task whose crew has vanished (repo: demo, since 2026-07-10)\n\n## Queued\n\n## Done\n' \
+    > "$home/data/backlog.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "FLEET DIVERGENCE - RECORDS AND REALITY DISAGREE" "no divergence alarm for a live-recorded task with a dead endpoint"
+  assert_contains "$out" "'dying-z' is recorded in-flight, but its endpoint reads dead" "divergence alarm did not name the dead-endpoint task"
+  assert_not_contains "$out" "backlog lists 'dying-z'" "case 1 wrongly fired when the backlog and record agree"
+  assert_not_contains "$out" "task record state/dying-z.meta exists, but" "case 2 wrongly fired when the backlog and record agree"
+
+  pass "a task recorded in-flight with a dead endpoint raises the divergence alarm"
+}
+
+test_divergence_read_only_advisory() {
+  local rec root home fakebin holder_pid out
+  rec=$(new_world divergence-read-only)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  printf '## In flight\n- **ghost-x** - a task the backlog thinks is live (repo: demo, since 2026-07-10)\n\n## Queued\n\n## Done\n' \
+    > "$home/data/backlog.md"
+
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_contains "$out" "FLEET DIVERGENCE - RECORDS AND REALITY DISAGREE" "divergence alarm missing on the read-only path"
+  assert_contains "$out" "This read-only session should report the divergence, not reconcile it" "read-only divergence alarm did not use advisory wording"
+  assert_not_contains "$out" "Reconcile before trusting this fleet state" "read-only divergence alarm printed the mutating reconcile instruction"
+
+  pass "a divergence in read-only mode still alarms, but with advisory wording"
+}
+
+test_consistent_fleet_no_divergence_alarm() {
+  local rec root home fakebin out
+  rec=$(new_world consistent-fleet)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live"
+
+  # A backlog In-flight item matched by a live task record - consistent. Plus a
+  # secondmate record with a DEAD endpoint that is deliberately NOT a backlog
+  # item: it must be excluded from every case (not in backlog, endpoint gone),
+  # proving secondmates never trip the cross-check.
+  printf '## In flight\n- **task-a** - the one real task (repo: demo, since 2026-07-10)\n\n## Queued\n\n## Done\n' \
+    > "$home/data/backlog.md"
+  printf 'window=fm-sess:live\nkind=ship\n' > "$home/state/task-a.meta"
+  printf 'window=fm-sess:sm-gone\nkind=secondmate\n' > "$home/state/sm-a.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_not_contains "$out" "FLEET DIVERGENCE" "a consistent fleet (with an excluded secondmate) wrongly raised the divergence alarm"
+  # The per-task endpoint lines still print; only the aggregate alarm is silent.
+  assert_contains "$out" "endpoint: alive (backend=tmux window=fm-sess:live)" "the consistent task's endpoint line went missing"
+
+  pass "a consistent fleet prints no divergence alarm, and secondmates are excluded from the cross-check"
+}
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
+test_divergence_backlog_inflight_without_meta
+test_divergence_meta_without_backlog
+test_divergence_dead_endpoint
+test_divergence_read_only_advisory
+test_consistent_fleet_no_divergence_alarm
 test_output_ordering_diagnostics_lead
 test_herdr_backend_diagnostics_follow_real_session_start
 test_status_tail_bounding
