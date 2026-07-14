@@ -78,21 +78,56 @@ fm_test_tmproot() {
 
 # --- BASE_PATH / real-tool resolution ---------------------------------------
 
-# fm_test_base_path [tool...]: echo a BASE_PATH-style PATH for tests that
-# shadow PATH with a fakebin dir. Starts from FM_TEST_BASE_PATH (or the
-# standard system dirs) and prepends the real directory of each named tool
-# that resolves on the host, so a test stays hermetic to fakebin overrides
-# while still finding a real tool installed somewhere the bare BASE_PATH may
-# not cover (Homebrew, Nix profile bins, ~/.local/bin, etc.). Generalizes the
-# JQ_DIR pattern from fm-x-mode.test.sh; callers that need the real tool
-# should pass it here rather than re-deriving its directory.
+# fm_test_base_path <dir> [tool...]: echo a BASE_PATH-style PATH for tests that
+# shadow PATH with a fakebin dir. Starts from FM_TEST_BASE_PATH (or the standard
+# system dirs) and makes each named tool that resolves on the host reachable, so
+# a test stays hermetic to fakebin overrides while still finding a real tool
+# installed somewhere the bare BASE_PATH may not cover (Homebrew, Nix profile
+# bins, ~/.local/bin, etc.). Generalizes the JQ_DIR pattern from
+# fm-x-mode.test.sh; callers that need the real tool should pass it here rather
+# than re-deriving its directory.
+#
+# Only the named tools are imported: each is symlinked into <dir>/realbin and
+# that one dir is prepended, never the tool's own prefix dir. Prepending the
+# prefix dir would drag every unrelated binary beside it (a shared ~/.local/bin
+# or Nix profile holds dozens) ahead of the system dirs, so a tool a test needs
+# ABSENT could resolve purely because of the host's layout.
 fm_test_base_path() {
-  local base=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin} tool dir
+  local dir=$1 base=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin} tool resolved realbin
+  shift
+  realbin="$dir/realbin"
   for tool in "$@"; do
-    dir=$(command -v "$tool" 2>/dev/null) && dir=$(dirname "$dir") || dir=
-    [ -n "$dir" ] && base="$dir:$base"
+    resolved=$(command -v "$tool" 2>/dev/null) || continue
+    # `command -v` echoes a bare name for a builtin, and the whole definition for
+    # a function; only an absolute path names a real file to link.
+    case $resolved in
+      /*) ;;
+      *) continue ;;
+    esac
+    mkdir -p "$realbin"
+    ln -sf "$resolved" "$realbin/$tool"
   done
+  [ -d "$realbin" ] && base="$realbin:$base"
   printf '%s\n' "$base"
+}
+
+# --- command -v masking -----------------------------------------------------
+
+# fm_test_command_mask <file> <tool>: write a BASH_ENV snippet at <file> that
+# makes `command -v <tool>` fail, and echo <file>. Use it when a test forces a
+# tool's absence from a fakebin PATH but a real one may still sit on a BASE_PATH
+# dir (e.g. apt's /usr/bin/node) and silently satisfy detection.
+fm_test_command_mask() {
+  local file=$1 tool=$2
+  cat > "$file" <<SH
+command() {
+  if [ "\${1:-}" = -v ] && [ "\${2:-}" = $tool ]; then
+    return 1
+  fi
+  builtin command "\$@"
+}
+SH
+  printf '%s\n' "$file"
 }
 
 # --- fakebin / PATH shims ---------------------------------------------------

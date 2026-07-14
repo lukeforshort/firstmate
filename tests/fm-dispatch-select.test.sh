@@ -5,11 +5,13 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# fm-dispatch-select.sh requires the real jq; make it resolvable regardless of
-# where it is installed, which the bare BASE_PATH may not include.
-BASE_PATH=$(fm_test_base_path jq)
 TMP_ROOT=$(fm_test_tmproot fm-dispatch-select-tests)
 mkdir -p "$TMP_ROOT"
+# fm-dispatch-select.sh requires the real jq; make it resolvable regardless of
+# where it is installed, which the bare BASE_PATH may not include. Only jq is
+# imported, so test_quota_missing_falls_back_to_first still sees no quota-axi
+# even on a host that installs both under one prefix.
+BASE_PATH=$(fm_test_base_path "$TMP_ROOT" jq)
 
 write_quota() {
   local file=$1 claude_status=$2 claude_five=$3 claude_week=$4 codex_status=$5 codex_five=$6 codex_week=$7
