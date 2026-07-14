@@ -13,11 +13,11 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+TMP_ROOT=$(fm_test_tmproot fm-x-mode-tests)
 # The client under test uses the real jq; fm_test_base_path makes it resolvable
 # regardless of where it is installed, which the bare BASE_PATH may not include.
 # Prepended after the fakebin so the fake curl still wins.
-BASE_PATH=$(fm_test_base_path jq)
-TMP_ROOT=$(fm_test_tmproot fm-x-mode-tests)
+BASE_PATH=$(fm_test_base_path "$TMP_ROOT" jq)
 
 # A fakebin `curl` that mimics the relay: it reads its behavior from env
 # (FAKE_POLL_CODE/FAKE_POLL_BODY/FAKE_ANSWER_CODE, and

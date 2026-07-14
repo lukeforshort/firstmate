@@ -404,18 +404,9 @@ EOF
   # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
   rm -f "$fakebin/node"
   # A real node may live on a BASE_PATH dir (e.g. apt's /usr/bin/node), which
-  # would satisfy detection and silently defeat this forced-missing case; mask
-  # `command -v node` the same way test_herdr_backend_diagnostics_follow_real_session_start
-  # masks tmux, so the diagnostic fires independent of the host's real tool layout.
-  mask="$home/mask-node.bash"
-  cat > "$mask" <<'SH'
-command() {
-  if [ "${1:-}" = -v ] && [ "${2:-}" = node ]; then
-    return 1
-  fi
-  builtin command "$@"
-}
-SH
+  # would satisfy detection and silently defeat this forced-missing case, so the
+  # diagnostic must fire independent of the host's real tool layout.
+  mask=$(fm_test_command_mask "$home/mask-node.bash" node)
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
@@ -457,15 +448,7 @@ EOF
     rm -f "$fakebin/tmux"
     fm_fake_exit0 "$fakebin" herdr jq
     printf '%s\n' manual > "$home/config/backlog-backend"
-    mask="$home/mask-tmux.bash"
-    cat > "$mask" <<'SH'
-command() {
-  if [ "${1:-}" = -v ] && [ "${2:-}" = tmux ]; then
-    return 1
-  fi
-  builtin command "$@"
-}
-SH
+    mask=$(fm_test_command_mask "$home/mask-tmux.bash" tmux)
     if [ "$mode" = configured ]; then
       printf '%s\n' herdr > "$home/config/backend"
       out=$(TMUX='' HERDR_ENV='' BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
@@ -601,15 +584,7 @@ EOF
   rm -f "$fakebin/node"
   # See test_output_ordering_diagnostics_lead: mask `command -v node` so a real
   # node on a BASE_PATH dir (e.g. apt's /usr/bin/node) cannot satisfy detection.
-  mask="$home/mask-node.bash"
-  cat > "$mask" <<'SH'
-command() {
-  if [ "${1:-}" = -v ] && [ "${2:-}" = node ]; then
-    return 1
-  fi
-  builtin command "$@"
-}
-SH
+  mask=$(fm_test_command_mask "$home/mask-node.bash" node)
 
   append_wake "$home/state" signal task-z "needs-decision: pick a library"
 
