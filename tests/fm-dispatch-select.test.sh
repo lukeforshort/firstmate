@@ -6,6 +6,14 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+# jq is an unconditional dependency of the script under test, never the subject
+# of a fixture: the fakebin only ever shadows quota-axi. Keep jq reachable on
+# hosts that install it outside the sandbox PATH's system dirs, so a quota
+# fallback case cannot fail as an unrelated "jq is required" exit 2.
+if ! (PATH="$BASE_PATH"; command -v jq >/dev/null 2>&1); then
+  JQ_BIN=$(command -v jq 2>/dev/null || true)
+  [ -n "$JQ_BIN" ] && BASE_PATH="$BASE_PATH:$(dirname "$JQ_BIN")"
+fi
 TMP_ROOT=$(fm_test_tmproot fm-dispatch-select-tests)
 mkdir -p "$TMP_ROOT"
 
