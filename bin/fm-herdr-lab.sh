@@ -21,8 +21,8 @@
 # delete is available only through teardown.
 # Both paths perform a fresh refuse-default check immediately before each
 # destructive call.
-# Provision records the running default session as a fleet-state tripwire and
-# teardown requires that record to be identical afterward.
+# Provision records the default session as a fleet-state tripwire, running or
+# not, and teardown requires that record to be identical afterward.
 set -u
 
 fm_herdr_lab_error() {
