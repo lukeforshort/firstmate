@@ -24,6 +24,7 @@ command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not found (required 
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+herdr_lab_precondition_ok || { echo "skip: no running default Herdr session for the fleet-state tripwire"; exit 0; }
 
 SESSION="fm-lab-eventwait-smoke-$$"
 export HERDR_SESSION="$SESSION"

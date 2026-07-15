@@ -44,6 +44,7 @@ command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (requi
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+herdr_lab_precondition_ok || { echo "skip: no running default Herdr session for the fleet-state tripwire"; exit 0; }
 
 # TMP_ROOT is physically resolved (mktemp -d "$(pwd -P)"-relative) to keep this
 # real-herdr smoke fixture free of unrelated OS symlink noise.

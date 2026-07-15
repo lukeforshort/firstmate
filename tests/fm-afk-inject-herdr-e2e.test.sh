@@ -40,6 +40,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
+herdr_lab_precondition_ok || { echo "skip: no running default Herdr session for the fleet-state tripwire"; exit 0; }
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }

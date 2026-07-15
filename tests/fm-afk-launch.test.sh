@@ -771,6 +771,10 @@ e2e_herdr() {
   command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (herdr e2e)"; return 0; }
   # shellcheck source=tests/herdr-test-safety.sh
   . "$ROOT/tests/herdr-test-safety.sh"
+  herdr_lab_precondition_ok || {
+    echo "skip: no running default Herdr session for the fleet-state tripwire (herdr e2e)"
+    return 0
+  }
   # shellcheck source=bin/fm-backend.sh
   . "$ROOT/bin/fm-backend.sh"
 
