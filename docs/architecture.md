@@ -50,6 +50,7 @@ That block owns the live wait shape for the running primary harness: Claude and 
 `bin/fm-watch-arm.sh` remains the verified arm wrapper for protocols that call it; it forks the watcher as a tracked child, verifies it is genuinely alive with a fresh liveness beacon, and prints exactly one honest status line (`started` / `attached` / restart-only `healthy` / `FAILED`, the last exiting non-zero).
 On `attached` it stays live until that existing cycle ends so background-notify harnesses do not get an empty false wake from a healthy no-op exit.
 Its `--restart` mode signals only the watcher recorded in the current home's `state/.watch.lock`, so restarting one home cannot kill sibling secondmate watchers.
+`fm-watch.sh` traps `TERM`, `INT`, and `HUP` explicitly and exits 143 through them, so a signalled watcher always falls through to its own singleton-lock release instead of intermittently leaking the lock and locking out the next watcher.
 A pull-based guard (`bin/fm-guard.sh`) warns through supervision tool output if the primary checkout is tangled, or if tasks are in flight and that watcher stops running or queued wakes are waiting to be drained.
 The drain script calls that guard after emptying the queue, which avoids repeating the queued-wakes warning for records it just consumed while still warning on stale watcher liveness.
 It leads with a prominent bordered tangle banner, while `bin/fm-guard.sh` owns the stale-watcher banner/reminder policy so repeated guarded commands stay noisy without reprinting the full watcher-down banner in the same episode.
@@ -128,6 +129,16 @@ When the file exists, `fm-spawn.sh` refuses crewmate and scout launches without 
 Secondmate launches are exempt because they resolve the secondmate harness and any optional secondmate model or effort tokens instead.
 Unsupported effort values are still recorded in task meta when passed to `fm-spawn.sh`, but the launch template omits any effort flag that the selected harness does not accept.
 That keeps spawn launch compatible across claude, codex, grok, pi, and opencode while preserving the requested profile for later audit.
+
+## Dispatch memory headroom
+
+Every agent launch is a real process, so concurrent dispatch on a memory-capped host can exhaust the box and take the whole fleet down with it.
+`fm-spawn.sh` sources `bin/fm-mem-guard.sh` and checks used memory against `FM_SPAWN_MEM_MAX_PCT` (default 80) once per task launch, before any side effect: no window, no worktree lease, no meta file, and no hook install.
+On a trip it prints a `DEFERRED:` line naming the measured used percent and the threshold, then exits 1.
+This is a tripwire, not a queue: it refuses one launch attempt, and firstmate retries the dispatch later from the backlog it already keeps.
+The check runs per task launch rather than per invocation, so a batch `id=repo` dispatch keeps its one-failure-does-not-stop-the-rest contract and can land its first tasks while deferring the rest as pressure rises.
+It applies identically to `--secondmate` launches, and `FM_SPAWN_MEM_FORCE=1` bypasses it for a captain-ordered emergency dispatch.
+The tripwire fails open on an unreadable or unparseable meminfo file; [configuration.md](configuration.md#environment-variables) owns the tuning knobs and fallback details.
 
 ## Optional secondmates
 

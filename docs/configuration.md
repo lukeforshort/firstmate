@@ -358,6 +358,9 @@ FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops
 FM_BACKEND_CMUX_COMPOSER_LINES=20  # cmux-only: tail lines scanned to locate the composer row for submit verification
 FM_BACKEND_CMUX_IDLE_RE='^Type a message\.\.\.$'  # cmux-only: empty-composer placeholder regex after border/prompt stripping
 CMUX_SOCKET_PASSWORD=   # cmux-only: socket password fallback when config/cmux-socket-password is absent (docs/cmux-backend.md)
+FM_SPAWN_MEM_MAX_PCT=80  # used-memory percent at or above which fm-spawn.sh defers a launch before any side effect; a blank or non-integer value warns and falls back to 80
+FM_SPAWN_MEM_FORCE=      # set to the literal 1 to skip the memory headroom check for a captain-ordered emergency dispatch; any value other than 1, 0, or blank warns and is ignored
+FM_MEMINFO_PATH_OVERRIDE=   # meminfo path read instead of /proc/meminfo; the hermetic test seam, never set outside tests
 FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest
 FM_BOOTSTRAP_DETECT_ONLY=0   # internal/read-only session-start mode: skip bootstrap's mutating sweeps and print advisory TANGLE wording
 FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppress drain, supervision repair, and checkout repair commands
@@ -430,6 +433,12 @@ FM_CRASH_NORMAL_SLEEP=5            # seconds to wait after an isolated watcher c
 FM_LOG_MAX_BYTES=1048576           # daemon log size that triggers trimming
 FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
 ```
+
+`bin/fm-mem-guard.sh` measures `used% = (MemTotal - MemAvailable) / MemTotal` from `/proc/meminfo` with bash builtins only, and `fm-spawn.sh` calls it once per task launch before any side effect.
+`FM_SPAWN_MEM_MAX_PCT` accepts a nonnegative integer percent; unset uses the default of 80 silently, while a blank or non-integer value warns on stderr and falls back to that same default.
+Only the literal `FM_SPAWN_MEM_FORCE=1` bypasses the check; unset, blank, and `0` leave it running silently, and any other value warns on stderr and is ignored, so the check still runs.
+The tripwire fails open: a missing, unreadable, or unparseable meminfo file lets the spawn proceed, so it can never brick dispatch on an environment without `/proc/meminfo`.
+The script's header owns the full contract.
 
 `fm-teardown.sh` retries only Git's `Unable to create '...index.lock': File exists` return failure up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times.
 `FM_TREEHOUSE_RETURN_LOCK_RETRIES` accepts a nonnegative integer, and an unset, blank, or invalid value uses the default of 3.
