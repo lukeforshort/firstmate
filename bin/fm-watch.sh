@@ -692,7 +692,12 @@ watcher_cleanup() {
   fm_lock_release "$WATCH_LOCK"
 }
 trap watcher_cleanup EXIT
-trap 'exit 1' HUP INT TERM
+# Bash runs the EXIT trap on an UNtrapped terminating signal only when it wins a
+# race with its own dying foreground child, so a bounded checkpoint or an
+# fm-watch-arm.sh --restart would intermittently leak this singleton lock and
+# lock out the next watcher. Trapping the signal explicitly makes the shell
+# handle it at a safe point and always fall through to the cleanup above.
+trap 'exit 143' TERM INT HUP
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
