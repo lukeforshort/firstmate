@@ -87,6 +87,10 @@
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<backend-target> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
+# Before any side effect, a memory headroom tripwire (bin/fm-mem-guard.sh)
+# refuses the launch and exits non-zero with a DEFERRED: message when used
+# memory is at or above FM_SPAWN_MEM_MAX_PCT (default 80); bypass with
+# FM_SPAWN_MEM_FORCE=1. See that script's header for the full contract.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -116,6 +120,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-mem-guard.sh
+. "$SCRIPT_DIR/fm-mem-guard.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -287,6 +293,12 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   done
   exit "$rc"
 fi
+# Memory headroom tripwire (bin/fm-mem-guard.sh): refuse before any side
+# effect (window, worktree lease, meta, hook install). Batch pairs each
+# re-exec this script in single-task mode above, so this check runs once per
+# task launch, letting a batch land its first task and defer the rest as
+# pressure rises.
+fm_mem_guard_check || exit 1
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
 PROJ=
