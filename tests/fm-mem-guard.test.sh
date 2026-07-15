@@ -37,7 +37,7 @@ run_check() {
     FM_MEMINFO_PATH_OVERRIDE=$meminfo
     export FM_MEMINFO_PATH_OVERRIDE
     for kv in "$@"; do
-      export "$kv"
+      export "${kv?}"
     done
     fm_mem_guard_check
   )
@@ -117,6 +117,37 @@ test_custom_threshold_honored() {
   pass "fm_mem_guard_check: FM_SPAWN_MEM_MAX_PCT overrides the default threshold"
 }
 
+test_bad_force_warns_and_still_checks() {
+  local mi out status
+  mi="$TMP_ROOT/badforce.meminfo"
+  write_meminfo "$mi" 100000 1000  # used 99%
+  out=$(run_check "$mi" FM_SPAWN_MEM_FORCE=true 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "a non-1 FM_SPAWN_MEM_FORCE must not bypass the check"
+  printf '%s\n' "$out" | grep -qF "FM_SPAWN_MEM_FORCE='true' ignored" || fail "should warn the bad bypass value was ignored, got: $out"
+  printf '%s\n' "$out" | grep -qF 'DEFERRED:' || fail "check should still defer after the warning, got: $out"
+
+  write_meminfo "$mi" 100000 90000  # used 10%, well under threshold
+  out=$(run_check "$mi" FM_SPAWN_MEM_FORCE=0 2>&1); status=$?
+  [ "$status" -eq 0 ] || fail "FM_SPAWN_MEM_FORCE=0 is the documented off value, got exit $status"
+  [ -z "$out" ] || fail "FM_SPAWN_MEM_FORCE=0 is honored as off and should not warn, got: $out"
+  pass "fm_mem_guard_check: only FM_SPAWN_MEM_FORCE=1 bypasses; another set value warns and is ignored"
+}
+
+test_bad_threshold_warns_and_defaults() {
+  local mi out status
+  mi="$TMP_ROOT/badthreshold.meminfo"
+  write_meminfo "$mi" 100000 21000  # used 79%, under the default 80
+  out=$(run_check "$mi" FM_SPAWN_MEM_MAX_PCT=95% 2>&1); status=$?
+  [ "$status" -eq 0 ] || fail "a bad threshold should fall back to the default 80 and proceed at 79%, got exit $status"
+  printf '%s\n' "$out" | grep -qF "FM_SPAWN_MEM_MAX_PCT='95%'" || fail "warning should name the bad value, got: $out"
+  printf '%s\n' "$out" | grep -qF 'default 80%' || fail "warning should name the default fallback, got: $out"
+
+  out=$(run_check "$mi" FM_SPAWN_MEM_MAX_PCT= 2>&1); status=$?
+  [ "$status" -eq 0 ] || fail "an empty threshold should fall back to the default 80, got exit $status"
+  printf '%s\n' "$out" | grep -qF "FM_SPAWN_MEM_MAX_PCT=''" || fail "an explicitly empty threshold should warn, got: $out"
+  pass "fm_mem_guard_check: an unparseable FM_SPAWN_MEM_MAX_PCT warns and falls back to 80"
+}
+
 test_under_threshold_proceeds
 test_at_threshold_defers
 test_over_threshold_defers
@@ -124,3 +155,5 @@ test_force_bypass_proceeds
 test_unreadable_meminfo_proceeds
 test_unparseable_meminfo_proceeds
 test_custom_threshold_honored
+test_bad_force_warns_and_still_checks
+test_bad_threshold_warns_and_defaults
