@@ -13,6 +13,7 @@ TRIPWIRES="$TMP_ROOT/tripwires"
 REAL_SLEEP=$(command -v sleep)
 mkdir -p "$FAKE_STATE"
 printf '%s\n' '/Users/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
+printf '%s\n' true > "$FAKE_STATE/default-running"
 : > "$FAKE_LOG"
 
 cat > "$FAKEBIN/herdr" <<'SH'
@@ -28,18 +29,21 @@ done
 [ "${previous:-}" = --session ] || { echo "fake herdr: missing trailing --session" >&2; exit 90; }
 session=$last
 default_socket=$(cat "$state/default-socket")
+default_running=$(cat "$state/default-running")
 lab_state=absent
 [ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
 
 case "$1 ${2:-}" in
   "session list")
     if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
-      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
+      jq -nc --arg socket "$default_socket" --argjson default_running "$default_running" \
+        '{sessions:[{default:true,name:"default",running:$default_running,socket_path:$socket}]}'
     else
       running=false
       [ "$lab_state" = running ] && running=true
       jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
-        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
+        --argjson default_running "$default_running" \
+        '{sessions:[{default:true,name:"default",running:$default_running,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
     fi
     ;;
   "server --session")
@@ -181,6 +185,26 @@ test_changed_default_trips_after_teardown() {
   pass "fm-herdr-lab: changed default fleet state is a hard failure"
 }
 
+test_stopped_default_still_provisions_and_trips() {
+  local name="fm-lab-default-stopped-$$" status=0
+  : > "$FAKE_LOG"
+  printf '%s\n' false > "$FAKE_STATE/default-running"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "a stopped default session must not block an isolated lab"
+  assert_present "$TRIPWIRES/$name.fleet-state.json" "provision against a stopped default recorded no tripwire"
+  grep -q '"running":false' "$TRIPWIRES/$name.fleet-state.json" ||
+    fail "tripwire did not record the default session's stopped state"
+  # The relaxed precondition must not weaken the tripwire: the default session
+  # coming up during lab work is still a fleet-state change.
+  printf '%s\n' true > "$FAKE_STATE/default-running"
+  run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "a default session that started during lab work must fail teardown"
+  printf '%s\n' false > "$FAKE_STATE/default-running"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown against an unchanged stopped default failed"
+  assert_absent "$TRIPWIRES/$name.fleet-state.json" "successful teardown left its tripwire behind"
+  printf '%s\n' true > "$FAKE_STATE/default-running"
+  pass "fm-herdr-lab: a stopped default session provisions and still trips on change"
+}
+
 test_stopped_owned_lab_can_reprovision() {
   local name="fm-lab-reprovision-$$"
   : > "$FAKE_LOG"
@@ -238,6 +262,7 @@ test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
 test_changed_default_trips_after_teardown
+test_stopped_default_still_provisions_and_trips
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch

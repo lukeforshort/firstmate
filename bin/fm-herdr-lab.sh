@@ -64,15 +64,19 @@ fm_herdr_lab_fleet_state() { # <session>
     fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
     return 1
   }
+  # The snapshot keeps .running so a lab session that starts or stops the
+  # default server trips the before/after comparison, but a stopped default is
+  # a legitimate state to record: requiring it to be running here would refuse
+  # every isolated lab session on a host that simply has no live default server.
   snapshot=$(printf '%s' "$sessions" | jq -c '
     [.sessions[]? | select(.default == true)]
-    | if length == 1 and .[0].name == "default" and .[0].running == true
+    | if length == 1 and .[0].name == "default"
       then .[0] | {name, default, running, socket_path}
       else empty
       end
   ' 2>/dev/null)
   [ -n "$snapshot" ] || {
-    fm_herdr_lab_error "fleet-state tripwire requires exactly one running default session"
+    fm_herdr_lab_error "fleet-state tripwire requires exactly one default session named 'default'"
     return 1
   }
   printf '%s\n' "$snapshot"
