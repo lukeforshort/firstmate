@@ -296,8 +296,10 @@ fi
 # Memory headroom tripwire (bin/fm-mem-guard.sh): refuse before any side
 # effect (window, worktree lease, meta, hook install). Batch pairs each
 # re-exec this script in single-task mode above, so this check runs once per
-# task launch, letting a batch land its first task and defer the rest as
-# pressure rises.
+# task launch. This protects sequential dispatch (each launch sees the
+# prior one's actual memory footprint); a batch's pairs re-exec within
+# milliseconds of each other, so they read essentially the same pre-spawn
+# reading and are not individually protected against each other.
 fm_mem_guard_check || exit 1
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
