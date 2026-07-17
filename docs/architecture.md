@@ -136,7 +136,8 @@ Every agent launch is a real process, so concurrent dispatch on a memory-capped 
 `fm-spawn.sh` sources `bin/fm-mem-guard.sh` and checks used memory against `FM_SPAWN_MEM_MAX_PCT` (default 80) once per task launch, before any side effect: no window, no worktree lease, no meta file, and no hook install.
 On a trip it prints a `DEFERRED:` line naming the measured used percent and the threshold, then exits 1.
 This is a tripwire, not a queue: it refuses one launch attempt, and firstmate retries the dispatch later from the backlog it already keeps.
-The check runs per task launch rather than per invocation, so a batch `id=repo` dispatch keeps its one-failure-does-not-stop-the-rest contract and can land its first tasks while deferring the rest as pressure rises.
+The check runs per task launch rather than per invocation, so a batch `id=repo` dispatch keeps its one-failure-does-not-stop-the-rest contract.
+This protects sequential dispatch, where each launch sees the prior one's actual memory footprint; a batch's pairs re-exec within milliseconds of each other, so they read essentially the same pre-spawn memory and are not individually protected against each other.
 It applies identically to `--secondmate` launches, and `FM_SPAWN_MEM_FORCE=1` bypasses it for a captain-ordered emergency dispatch.
 The tripwire fails open on an unreadable or unparseable meminfo file; [configuration.md](configuration.md#environment-variables) owns the tuning knobs and fallback details.
 
