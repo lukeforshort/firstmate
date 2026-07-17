@@ -39,7 +39,15 @@
 #   5. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
 #                       state/.afk, and a cheap per-task endpoint-liveness read:
-#                       read-only, always runs.
+#                       read-only, always runs. It then cross-checks those three
+#                       fleet-state sources - backlog "## In flight" items, task
+#                       records (state/*.meta), and the just-computed endpoint
+#                       reads - and prints ONE loud, bordered divergence alarm
+#                       when records and reality disagree (a backlog in-flight
+#                       item with no task record, a task record missing from the
+#                       backlog, or an in-flight task whose endpoint reads dead).
+#                       Silent when everything agrees, and read-only in both lock
+#                       modes: a refused session is told to report, not reconcile.
 #   6. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
