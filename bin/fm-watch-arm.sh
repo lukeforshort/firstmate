@@ -140,6 +140,26 @@ emit_arm_failed() {
   [ -n "$ann" ] && printf '● %s\n' "$ann" >&2
 }
 
+# Supervision protocols that invoke --restart as their ROUTINE per-cycle arm: the
+# pi extension (docs/supervision-protocols/pi.md) and the opencode plugin
+# (docs/supervision-protocols/opencode.md) re-arm this way on every cycle. On
+# those, a --restart is normal operation, not an operator-forced wedge clear, so
+# it must NOT count as a forced-restart symptom - otherwise the counter crosses
+# threshold within a few healthy turns and nags forever. Background-arm protocols
+# (claude, codex, grok) only reach --restart on a deliberate hand-forced restart.
+# One place owns this vocabulary so a routine arm is never mislabeled a workaround.
+FM_ROUTINE_ARM_PROTOCOLS='pi opencode'
+
+# 0 if this home's primary harness arms routinely via --restart, 1 otherwise.
+primary_harness_arms_routinely() {
+  local h
+  h=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || echo unknown)
+  case " $FM_ROUTINE_ARM_PROTOCOLS " in
+    *" $h "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 mode=arm
 case "${1:-}" in
   ''|arm|--arm) mode=arm ;;
@@ -149,9 +169,13 @@ esac
 
 if [ "$mode" = restart ]; then
   # A hand-forced restart is the workaround the audit (B2/L4) found applied over
-  # and over in place of a structural fix. Count each one; announce at threshold.
-  restart_ann=$(fm_symptom_record forced-restart "operator forced a watcher restart" 2>/dev/null || true)
-  [ -n "$restart_ann" ] && printf '● %s\n' "$restart_ann" >&2
+  # and over in place of a structural fix. Count each genuine one; announce at
+  # threshold. Skip the count on routine-arm protocols, where --restart is the
+  # normal per-cycle arm rather than an operator intervention.
+  if ! primary_harness_arms_routinely; then
+    restart_ann=$(fm_symptom_record forced-restart "operator forced a watcher restart" 2>/dev/null || true)
+    [ -n "$restart_ann" ] && printf '● %s\n' "$restart_ann" >&2
+  fi
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
   if fm_pid_alive "$lock_pid"; then

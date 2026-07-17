@@ -405,10 +405,10 @@ test_turnend_no_inflight_records_nothing() {
 install_arm_scripts() {  # <dir>
   local dir=$1 s
   mkdir -p "$dir/bin" "$dir/state"
-  for s in fm-watch-arm.sh fm-wake-lib.sh fm-symptom-lib.sh; do
+  for s in fm-watch-arm.sh fm-wake-lib.sh fm-symptom-lib.sh fm-harness.sh; do
     cp "$ROOT/bin/$s" "$dir/bin/$s"
   done
-  chmod +x "$dir/bin/fm-watch-arm.sh"
+  chmod +x "$dir/bin/fm-watch-arm.sh" "$dir/bin/fm-harness.sh"
   # A stub watcher that exits immediately without ever taking the lock, so the arm
   # can only reach its FAILED path.
   cat > "$dir/bin/fm-watch.sh" <<'EOF'
@@ -418,11 +418,24 @@ EOF
   chmod +x "$dir/bin/fm-watch.sh"
 }
 
-run_arm() {  # <dir> [--restart]
-  local dir=$1 home
+run_arm() {  # <dir> [--harness claude|pi] [args...]
+  local dir=$1 home marker=
   shift
+  if [ "${1:-}" = --harness ]; then
+    marker=$2
+    shift 2
+  fi
   home=$(cd "$dir" && pwd)
-  env FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ARM_CONFIRM_TIMEOUT=1 FM_GUARD_GRACE=1 \
+  # Pin the harness deterministically: clear any inherited harness markers so the
+  # primary-protocol detection cannot resolve off the real session running the
+  # suite, then set exactly the requested one.
+  local -a harness_env=(env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT)
+  case "$marker" in
+    claude) harness_env+=(CLAUDECODE=1) ;;
+    pi) harness_env+=(PI_CODING_AGENT=true) ;;
+  esac
+  "${harness_env[@]}" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_ARM_CONFIRM_TIMEOUT=1 FM_GUARD_GRACE=1 \
     bash "$dir/bin/fm-watch-arm.sh" "$@" 2>&1
 }
 
@@ -457,25 +470,43 @@ test_arm_forced_restart_announces_at_threshold() {
   dir="$TMP_ROOT/arm-restart-thresh"
   install_arm_scripts "$dir"
   seed_symptom_log "$dir/state" forced-restart 2
-  # --restart records the forced-restart incident up front, before any watcher
-  # work, then falls through to a FAILED arm (harmless here). We assert the
-  # forced-restart advisory, which surfaces regardless of the arm outcome.
-  out=$(run_arm "$dir" --restart)
+  # On a background-arm protocol (claude), --restart is a genuine hand-forced
+  # restart: it records the incident up front, before any watcher work, then falls
+  # through to a FAILED arm (harmless here). We assert the forced-restart advisory,
+  # which surfaces regardless of the arm outcome.
+  out=$(run_arm "$dir" --harness claude --restart)
   assert_contains "$out" "$RECUR_MARK" "at threshold a forced restart must carry the recurrence advisory"
   assert_contains "$out" "forced-restart" "the advisory must name the forced-restart class"
   assert_contains "$out" "$FILE_TASK_MARK" "the advisory must tell the agent to file a structural fix"
-  pass "fm-watch-arm: a forced restart carries the recurrence advisory at threshold"
+  pass "fm-watch-arm: a forced restart on a background-arm protocol carries the recurrence advisory at threshold"
 }
 
 test_arm_forced_restart_silent_below_threshold() {
   local dir out
   dir="$TMP_ROOT/arm-restart-below"
   install_arm_scripts "$dir"
-  out=$(run_arm "$dir" --restart)
+  out=$(run_arm "$dir" --harness claude --restart)
   assert_not_contains "$out" "$RECUR_MARK" "a first forced restart must not carry a recurrence advisory"
   [ "$(wc -l < "$dir/state/.symptom-forced-restart.log")" -eq 1 ] \
     || fail "a first forced restart must record exactly one incident"
   pass "fm-watch-arm: a first forced restart records one incident and stays quiet"
+}
+
+# A routine --restart under a routine-arm primary protocol (pi, opencode) is the
+# normal per-cycle arm, not an operator workaround, so it must record NOTHING - no
+# log growth and no advisory - even when the class is already at threshold.
+# Otherwise the counter would nag on every healthy supervision cycle.
+test_arm_routine_restart_records_nothing() {
+  local dir out
+  dir="$TMP_ROOT/arm-restart-routine"
+  install_arm_scripts "$dir"
+  seed_symptom_log "$dir/state" forced-restart 2
+  out=$(run_arm "$dir" --harness pi --restart)
+  assert_not_contains "$out" "$RECUR_MARK" "a routine-arm --restart must never surface the recurrence advisory"
+  assert_not_contains "$out" "forced-restart" "a routine-arm --restart must not mention the forced-restart class"
+  [ "$(wc -l < "$dir/state/.symptom-forced-restart.log")" -eq 2 ] \
+    || fail "a routine-arm --restart must not append to the forced-restart log"
+  pass "fm-watch-arm: a routine-arm --restart records nothing and never crosses the threshold"
 }
 
 # --- ENGINE ---
@@ -506,3 +537,4 @@ test_arm_failed_announces_at_threshold
 test_arm_failed_silent_below_threshold
 test_arm_forced_restart_announces_at_threshold
 test_arm_forced_restart_silent_below_threshold
+test_arm_routine_restart_records_nothing
