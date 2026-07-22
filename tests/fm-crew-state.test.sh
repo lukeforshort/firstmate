@@ -122,7 +122,20 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr"
+  # Fake `gh pr view <url> --json state -q .state`, serving FM_FAKE_GH_STATE
+  # verbatim (MERGED/CLOSED/OPEN, or empty to model an unresolvable read). Lets
+  # the outcome=passed path verify a PR's landed state hermetically, without
+  # touching the network. Placed first on PATH so it shadows the real gh.
+  cat > "$fb/gh" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  pr)
+    [ "${2:-}" = view ] && printf '%s\n' "${FM_FAKE_GH_STATE:-}" ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr" "$fb/gh"
   printf '%s\n' "$fb"
 }
 
@@ -162,8 +175,9 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_GH_STATE=""
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_TMUX_MISSING
-  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_GH_STATE
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -649,7 +663,8 @@ test_top_level_fixing_done_log_stays_working() {
   pass "top-level fixing is not overridden by a stale done log"
 }
 
-# (d) terminal run-step is authoritative
+# (d) terminal run-step is authoritative: outcome=passed with a gh-confirmed
+# merged PR reads done and asserts the terminal merged/closed detail.
 test_terminal_passed() {
   reset_fakes
   local d; d=$(new_case passed)
@@ -657,10 +672,68 @@ test_terminal_passed() {
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-d.meta" "window=fm:fm-feat-d" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-d)"
+  FM_FAKE_GH_STATE=MERGED
   local out; out=$(run_crew_state "$d" feat-d)
   assert_contains "$out" "state: done" "passed run -> done"
   assert_contains "$out" "source: run-step" "passed -> run-step source"
-  pass "terminal passed run is authoritative"
+  assert_contains "$out" "PR merged/closed" "gh-confirmed merge reports the terminal detail"
+  pass "terminal passed run with a merged PR is authoritative"
+}
+
+# Regression for mgmt-audit finding B4/L1: no-mistakes reported outcome=passed
+# while the PR was still OPEN and unmerged, and fm-crew-state read that as a
+# terminal "run passed: PR merged/closed" - a false terminal from the designated
+# supervision truth source that can end supervision of unlanded work. A direct
+# gh read now gates the terminal reading: an open PR must report a NON-terminal
+# state and must never claim merged/closed.
+test_passed_but_pr_open_is_non_terminal() {
+  reset_fakes
+  local d; d=$(new_case passed-pr-open)
+  make_repo_on_branch "$d/wt" fm/feat-open
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-open.meta" "window=fm:fm-feat-open" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-open)"
+  FM_FAKE_GH_STATE=OPEN
+  local out; out=$(run_crew_state "$d" feat-open)
+  assert_contains "$out" "state: working" "outcome=passed + open PR -> non-terminal working"
+  assert_contains "$out" "source: run-step" "open-PR verification stays run-step sourced"
+  assert_contains "$out" "awaiting merge" "open PR detail explains it is awaiting merge"
+  assert_not_contains "$out" "state: done" "an open PR must never read as a terminal done"
+  assert_not_contains "$out" "merged/closed" "an open PR must never claim merged/closed"
+  pass "outcome=passed with an open PR reports a non-terminal state"
+}
+
+# A gh CLOSED PR is a genuine terminal end (abandoned branch) and still reads done.
+test_passed_pr_closed_is_terminal() {
+  reset_fakes
+  local d; d=$(new_case passed-pr-closed)
+  make_repo_on_branch "$d/wt" fm/feat-closed
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-closed.meta" "window=fm:fm-feat-closed" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-closed)"
+  FM_FAKE_GH_STATE=CLOSED
+  local out; out=$(run_crew_state "$d" feat-closed)
+  assert_contains "$out" "state: done" "outcome=passed + closed PR -> done"
+  assert_contains "$out" "PR merged/closed" "closed PR reports the terminal detail"
+  pass "outcome=passed with a closed PR is terminal"
+}
+
+# When gh cannot answer (missing/unresolvable PR), the reading stays done but
+# must NOT assert merged/closed - it reports the merge state as unverified rather
+# than guessing the terminal claim that caused the incident.
+test_passed_unverifiable_pr_does_not_claim_merged() {
+  reset_fakes
+  local d; d=$(new_case passed-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-unver
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-unver.meta" "window=fm:fm-feat-unver" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-unver)"
+  FM_FAKE_GH_STATE=""   # gh returns nothing: state unresolvable
+  local out; out=$(run_crew_state "$d" feat-unver)
+  assert_contains "$out" "state: done" "unverifiable passed run still reads done"
+  assert_contains "$out" "unverified" "detail marks the merge state unverified"
+  assert_not_contains "$out" "merged/closed" "unverified passed run must not claim merged/closed"
+  pass "unverifiable passed run reports done without a merged/closed claim"
 }
 
 test_terminal_failed() {
@@ -993,6 +1066,7 @@ test_dead_window_still_reports_terminal_run_step() {
   fm_write_meta "$d/state/feat-dead-done.meta" "window=fm:fm-feat-dead-done" "worktree=$d/wt" "kind=ship"
   printf 'done: PR https://github.com/o/r/pull/3 checks green\n' > "$d/state/feat-dead-done.status"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-dead-done)"
+  FM_FAKE_GH_STATE=MERGED
   FM_FAKE_TMUX_MISSING=1   # the crew's window has closed
   local out; out=$(run_crew_state "$d" feat-dead-done)
   assert_contains "$out" "state: done" "closed pane still reports terminal run-step done"
@@ -1251,6 +1325,9 @@ test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
+test_passed_but_pr_open_is_non_terminal
+test_passed_pr_closed_is_terminal
+test_passed_unverifiable_pr_does_not_claim_merged
 test_terminal_failed
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
