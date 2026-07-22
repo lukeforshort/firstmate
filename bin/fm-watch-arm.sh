@@ -265,6 +265,7 @@ attach_and_wait() {
         cycle_begin "$attached_pid" attached
         report_attached
       fi
+      fm_arm_marker_touch "$STATE"
       sleep "$ATTACH_POLL"
       continue
     fi
@@ -322,6 +323,16 @@ case "${1:-}" in
   *) echo "usage: $(basename "$0") [--restart]" >&2; exit 2 ;;
 esac
 
+# Arm marker: a second, independent "supervision is not missing" signal for
+# bin/fm-turnend-guard.sh and bin/fm-guard.sh, covering the window where this
+# script is genuinely, actively working (a restart's kill-wait, the fork, the
+# confirm poll) but fm_watcher_healthy cannot yet see a complete identity-
+# matched lock. See bin/fm-wake-lib.sh's fm_arm_in_progress for the full
+# contract. Written as early as possible, refreshed every loop iteration
+# below, and always cleared on exit via the EXIT trap.
+trap 'fm_arm_marker_clear "$STATE"' EXIT
+fm_arm_marker_write "$STATE" "$FM_HOME" || true
+
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
@@ -333,6 +344,7 @@ if [ "$mode" = restart ]; then
       # of seeing the dying one as a live holder and no-opping.
       i=0
       while [ "$i" -lt 50 ] && fm_pid_alive "$lock_pid"; do
+        fm_arm_marker_touch "$STATE"
         sleep 0.1
         i=$((i + 1))
       done
@@ -468,6 +480,7 @@ while :; do
     owned_child_finished "$rc"
     exit $?
   fi
+  fm_arm_marker_touch "$STATE"
   if [ "$child_done" -eq 0 ] && ! fm_pid_alive "$child"; then
     wait "$child"
     rc=$?

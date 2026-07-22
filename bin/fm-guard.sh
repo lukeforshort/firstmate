@@ -160,8 +160,10 @@ fi
 
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
-# calls in the same episode get a one-line reminder only.
-if [ "$watcher_fresh" = false ]; then
+# calls in the same episode get a one-line reminder only. A live
+# bin/fm-watch-arm.sh actively working to establish that watcher also counts as
+# supervision present - see fm_arm_in_progress in bin/fm-wake-lib.sh.
+if [ "$watcher_fresh" = false ] && ! fm_arm_in_progress "$STATE" "${FM_ARM_GRACE:-30}" "$FM_HOME"; then
   episode_key=$(fm_guard_stale_episode_key "$STATE")
   episode_key=${episode_key%$'\n'}
   print_full_banner=0

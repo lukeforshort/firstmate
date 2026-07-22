@@ -196,6 +196,19 @@ record_watcher_lock() {
   printf '%s\n' "$identity" > "$dir/state/.watch.lock/pid-identity"
 }
 
+# record_arm_marker mirrors bin/fm-watch-arm.sh's fm_arm_marker_write: a live,
+# identity-matched, home-matched marker directory that a turn end during the
+# fork/confirm window (before the watch lock's identity trio or first beacon
+# touch exist) must recognize as "supervision is not missing".
+record_arm_marker() {
+  local dir=$1 pid=$2 identity=$3 root
+  root=$(cd "$dir" && pwd)
+  mkdir -p "$dir/state/.watch-arm.marker"
+  printf '%s\n' "$pid" > "$dir/state/.watch-arm.marker/pid"
+  printf '%s\n' "$root" > "$dir/state/.watch-arm.marker/fm-home"
+  printf '%s\n' "$identity" > "$dir/state/.watch-arm.marker/pid-identity"
+}
+
 test_hook_silent_when_no_work_in_flight() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-idle")
@@ -248,6 +261,65 @@ test_hook_silent_with_live_lock_and_fresh_beacon() {
   expect_code 0 "$status" "hook must exit 0 with a live identity-matched watcher lock and fresh beacon"
   [ -z "$out" ] || fail "hook produced output despite a live fresh watcher lock: $out"
   pass "fm-turnend-guard: silent no-op with a live watcher lock and fresh beacon"
+}
+
+test_hook_silent_during_healthy_arm_in_progress() {
+  # The fork/confirm window: no watch.lock exists yet at all (fm-watch.sh has
+  # not even claimed the singleton), so fm_watcher_healthy necessarily fails -
+  # but a live, identity-matched fm-watch-arm.sh marker proves supervision is
+  # genuinely, actively being established, not missing.
+  local dir pid identity out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-arm-progress")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not identify live arm holder"
+  }
+  record_arm_marker "$dir" "$pid" "$identity"
+  out=$(run_hook "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "hook must not block while a live, identity-matched arm is in progress"
+  [ -z "$out" ] || fail "hook produced output during a healthy in-progress arm: $out"
+  pass "fm-turnend-guard: silent no-op during a healthy in-progress arm with no watch lock yet"
+}
+
+test_hook_blocks_when_arm_marker_pid_is_dead() {
+  local dir dead out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-arm-dead-pid")
+  dead=$(nonexistent_pid)
+  : > "$dir/state/task1.meta"
+  record_arm_marker "$dir" "$dead" "dead arm identity"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "hook must block when the arm marker names a dead pid"
+  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  pass "fm-turnend-guard: blocks when the arm marker's pid is dead (no fail-open on a dead arm)"
+}
+
+test_hook_blocks_when_arm_marker_is_stale() {
+  # A live pid that stopped refreshing its marker is a wedged arm, not a
+  # healthy one in progress - it must still alarm once past FM_ARM_GRACE.
+  local dir pid identity out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-arm-wedged")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not identify live arm holder"
+  }
+  record_arm_marker "$dir" "$pid" "$identity"
+  touch -t 202001010000 "$dir/state/.watch-arm.marker"
+  out=$(printf '{"stop_hook_active":false}' | CLAUDECODE=1 FM_HOME="$dir" FM_ARM_GRACE=30 bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "hook must block once a live-pid arm marker goes stale past FM_ARM_GRACE"
+  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  pass "fm-turnend-guard: blocks on a wedged arm (live pid, marker stale past grace)"
 }
 
 test_hook_blocks_with_live_lock_and_stale_beacon() {
@@ -910,6 +982,9 @@ test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_when_dead_lock_has_fresh_beacon
 test_hook_silent_with_live_lock_and_fresh_beacon
+test_hook_silent_during_healthy_arm_in_progress
+test_hook_blocks_when_arm_marker_pid_is_dead
+test_hook_blocks_when_arm_marker_is_stale
 test_hook_blocks_with_live_lock_and_stale_beacon
 test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
