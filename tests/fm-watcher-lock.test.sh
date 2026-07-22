@@ -209,17 +209,21 @@ test_guard_warns_on_wedged_arm_marker() {
 }
 
 test_watcher_lock_match_retries_transient_ps_failure() {
-  # fm_pid_identity forks `ps`; under a loaded fleet that fork can transiently
-  # fail for a pid that is, in fact, still alive and unchanged (the real
-  # incident this guards against: a turn-end guard false alarm on a watcher
-  # healthy for ~15 minutes, confirmed matching on an immediate manual
-  # recheck). The first two `ps` invocations here fail; the third succeeds -
-  # fm_watcher_lock_matches_pid must retry through that and still confirm.
-  local dir state fakebin counter real_ps pid identity out
+  # fm_pid_identity prefers reading /proc directly on Linux and only forks
+  # `ps` as a fallback (non-Linux, or /proc unreadable). Force that fallback
+  # with an unreadable FM_PROC_ROOT_OVERRIDE so this test still exercises the
+  # ps path under a heavily loaded fleet that fork can transiently fail for a
+  # pid that is, in fact, still alive and unchanged (the real incident this
+  # guards against: a turn-end guard false alarm on a watcher healthy for ~15
+  # minutes, confirmed matching on an immediate manual recheck). The first two
+  # `ps` invocations here fail; the third succeeds - fm_watcher_lock_matches_pid
+  # must retry through that and still confirm.
+  local dir state fakebin counter real_ps pid identity out no_proc
   dir=$(make_case pid-identity-retry)
   state="$dir/state"
   fakebin="$dir/fakebin"
   counter="$dir/ps-calls"
+  no_proc="$dir/no-proc"
   real_ps=$(command -v ps)
   : > "$counter"
   cat > "$fakebin/ps" <<EOF
@@ -234,13 +238,13 @@ EOF
   chmod +x "$fakebin/ps"
   sleep 60 &
   pid=$!
-  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid")
+  identity=$(FM_PROC_ROOT_OVERRIDE="$no_proc" FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid")
   mkdir "$state/.watch.lock"
   printf '%s\n' "$pid" > "$state/.watch.lock/pid"
   printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
   printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
   printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
-  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_PID_IDENTITY_RETRY_DELAY=0.01 bash -c '
+  out=$(PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" FM_STATE_OVERRIDE="$state" FM_PID_IDENTITY_RETRY_DELAY=0.01 bash -c '
     . "$1"
     if fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"; then echo match; else echo nomatch; fi
   ' _ "$LIB" "$state" "$WATCH" "$pid" "$dir")
@@ -253,11 +257,13 @@ EOF
 
 test_watcher_lock_match_fails_on_persistent_ps_failure() {
   # The retry must be bounded: a `ps` that never recovers (or a genuinely dead
-  # pid) must still fail, never spin or silently pass.
-  local dir state fakebin pid out
+  # pid) must still fail, never spin or silently pass. Same unreadable
+  # FM_PROC_ROOT_OVERRIDE as above forces the ps fallback path.
+  local dir state fakebin pid out no_proc
   dir=$(make_case pid-identity-retry-persistent)
   state="$dir/state"
   fakebin="$dir/fakebin"
+  no_proc="$dir/no-proc"
   cat > "$fakebin/ps" <<'EOF'
 #!/usr/bin/env bash
 exit 1
@@ -270,7 +276,7 @@ EOF
   printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
   printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
   printf '%s\n' "some identity" > "$state/.watch.lock/pid-identity"
-  out=$(PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_PID_IDENTITY_RETRY_DELAY=0.01 bash -c '
+  out=$(PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" FM_STATE_OVERRIDE="$state" FM_PID_IDENTITY_RETRY_DELAY=0.01 bash -c '
     . "$1"
     if fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"; then echo match; else echo nomatch; fi
   ' _ "$LIB" "$state" "$WATCH" "$pid" "$dir")
@@ -292,6 +298,7 @@ test_turnend_guard_silent_during_slow_arm_startup() {
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
   cp "$ROOT/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
+  cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-instructions.sh" "$dir/bin/fm-supervision-instructions.sh"
   cp "$ROOT/bin/fm-harness.sh" "$dir/bin/fm-harness.sh"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
